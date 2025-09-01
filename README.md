@@ -14,6 +14,8 @@ USB/IP (protocolo de compartilhamento USB via rede)
 
 Python/Java (opcional, para integração com apps que usam os dispositivos USB)
 
+https://github.com/cezanne/usbip-win/tags
+
 Funcionalidades
 
 Exportar dispositivos USB do Raspberry Pi para Windows
@@ -27,10 +29,8 @@ Compatível com diversos tipos de dispositivos USB (pendrives, dongles, câmeras
 Arquitetura
 [ Dispositivo USB ]
         │
-        ▼
 [ Raspberry Pi (Servidor USB) ]
-        │ (Rede Local)
-        ▼
+        │ 
 [ Windows (Cliente USB) ]
 
 Como Usar
