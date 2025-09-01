@@ -27,9 +27,11 @@ Permite automação de detecção e conexão (via scripts)
 Compatível com diversos tipos de dispositivos USB (pendrives, dongles, câmeras, etc.)
 
 Arquitetura
-[ Dispositivo USB ] -
+[ Dispositivo USB ] 
+        |
         
-[ Raspberry Pi (Servidor USB) ] -
+[ Raspberry Pi (Servidor USB) ] 
+        |
          
 [ Windows (Cliente USB) ]
 
