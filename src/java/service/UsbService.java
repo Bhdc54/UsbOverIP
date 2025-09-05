@@ -1,3 +1,7 @@
+package service;
+
+import listener.UsbListener;
+
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
@@ -10,11 +14,6 @@ public class UsbService {
     private static final String USBIP_PATH = "C:\\Users\\03357343169\\Downloads\\usbip-win-0.3.6-dev\\usbip.exe";
     private static final String RASPBERRY_IP = "172.20.40.163";
     private String portaAssociada;
-
-    // Listener para a UI
-    public interface UsbListener {
-        void onNewDevices(List<String> novosDispositivos);
-    }
 
     private UsbListener listener;
     private Set<String> dispositivosAtuais = new HashSet<>();
@@ -108,5 +107,5 @@ public class UsbService {
         proc.waitFor();
         return null;
     }
-
 }
+

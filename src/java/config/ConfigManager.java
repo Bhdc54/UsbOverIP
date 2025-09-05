@@ -1,4 +1,5 @@
-// ConfigManager.java
+package config;
+
 import java.io.*;
 import java.net.InetAddress;
 import java.text.SimpleDateFormat;
