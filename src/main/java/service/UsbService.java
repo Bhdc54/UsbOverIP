@@ -12,7 +12,7 @@ import java.util.Set;
 
 public class UsbService {
     private static final String USBIP_PATH = "C:\\Users\\03357343169\\Downloads\\usbip-win-0.3.6-dev\\usbip.exe";
-    private static final String RASPBERRY_IP = "172.20.40.163";
+    private static final String RASPBERRY_IP = "172.20.40.177";
     private String portaAssociada;
 
     private UsbListener listener;

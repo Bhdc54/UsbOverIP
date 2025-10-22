@@ -1,0 +1,12 @@
+ui\LogoLoader.class
+ui\RightPanel.class
+service\Configuracao.class
+Main.class
+service\DatabaseConnection.class
+ui\MainFrame.class
+service\ConfigService.class
+ui\LeftPanel.class
+ui\TokenPanel.class
+config\ConfigManager.class
+service\UsbService.class
+listener\UsbListener.class
