@@ -92,4 +92,31 @@ public class ConfigService {
 
         return cfg;
     }
+   // 🔹 Busca configuração pelo IP (pega o último cadastro para aquele IP)
+    public Configuracao buscarPorIp(String ip) {
+        Configuracao cfg = null;
+        String sql = "SELECT * FROM configuracoes WHERE ip = ? ORDER BY id DESC LIMIT 1";
+
+        try (Connection conn = DatabaseConnection.getConnection();
+            PreparedStatement stmt = conn.prepareStatement(sql)) {
+
+            stmt.setString(1, ip);
+            ResultSet rs = stmt.executeQuery();
+
+            if (rs.next()) {
+                cfg = new Configuracao(
+                        rs.getInt("id"),
+                        rs.getString("nome"),
+                        rs.getString("ip")
+                );
+            }
+
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+
+        return cfg;
+    }
 }
+
+ 

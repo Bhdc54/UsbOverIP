@@ -11,8 +11,8 @@ import java.util.List;
 import java.util.Set;
 
 public class UsbService {
-    private static final String USBIP_PATH = "C:\\Users\\03357343169\\Downloads\\usbip-win-0.3.6-dev\\usbip.exe";
-    private static final String RASPBERRY_IP = "172.20.40.177";
+    private static final String USBIP_PATH = "usbip-win-0.3.6-dev/usbip.exe";
+    private static final String RASPBERRY_IP = "172.20.41.61";
     private String portaAssociada;
 
     private UsbListener listener;
@@ -107,5 +107,49 @@ public class UsbService {
         proc.waitFor();
         return null;
     }
+    public void detachAll() {
+    try {
+        // 1) Descobre todas as portas "In use"
+        ArrayList<String> ports = new ArrayList<>();
+        ProcessBuilder pb = new ProcessBuilder(USBIP_PATH, "port");
+        pb.redirectErrorStream(true);
+        Process proc = pb.start();
+
+        try (BufferedReader reader =
+                 new BufferedReader(new InputStreamReader(proc.getInputStream()))) {
+
+            String line;
+            while ((line = reader.readLine()) != null) {
+                line = line.trim();
+                // Ex.: "Port 0: <Port in Use> ..."
+                if (line.startsWith("Port ") && line.toLowerCase().contains("in use")) {
+                    int i0 = "Port ".length();
+                    int i1 = line.indexOf(':', i0);
+                    if (i1 > i0) {
+                        String portNum = line.substring(i0, i1).trim();
+                        ports.add(portNum);
+                    }
+                }
+            }
+        }
+        proc.waitFor();
+
+        // 2) Faz detach em cada porta em uso
+        for (String port : ports) {
+            try {
+                ProcessBuilder dpb = new ProcessBuilder(USBIP_PATH, "detach", "--port", port);
+                dpb.inheritIO();
+                Process p = dpb.start();
+                p.waitFor();
+                System.out.println("Dettach realizado na porta: " + port);
+            } catch (Exception ex) {
+                ex.printStackTrace();
+            }
+        }
+    } catch (Exception e) {
+        e.printStackTrace();
+    }
+}
+
 }
 
