@@ -17,11 +17,18 @@
             <artifactId>postgresql</artifactId>
             <version>42.5.1</version>
         </dependency>
+
+        <!-- Biblioteca de cliente/servidor WebSocket -->
+        <dependency>
+            <groupId>org.java-websocket</groupId>
+            <artifactId>Java-WebSocket</artifactId>
+            <version>1.6.0</version>
+        </dependency>
     </dependencies>
 
     <build>
         <plugins>
-            <!-- Plugin para criar um jar executável com todas dependências -->
+            <!-- Plugin para criar um jar executável com todas as dependências -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-assembly-plugin</artifactId>
@@ -32,6 +39,7 @@
                     </descriptorRefs>
                     <archive>
                         <manifest>
+                            <!-- mantém a mesma main que você já usa hoje -->
                             <mainClass>Main</mainClass>
                         </manifest>
                     </archive>

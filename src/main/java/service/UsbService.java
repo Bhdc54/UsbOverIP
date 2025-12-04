@@ -150,6 +150,19 @@ public class UsbService {
         e.printStackTrace();
     }
 }
+        public void detachAllDevices() {
+        try {
+            ArrayList<String> dispositivos = listUsbDevices();
+            for (String disp : dispositivos) {
+                String busid = disp.split(" - ")[0].trim();
+                detachUsbDevice(busid);
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
 
 }
+
+
 

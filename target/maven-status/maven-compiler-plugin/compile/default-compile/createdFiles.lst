@@ -1,6 +1,9 @@
 ui\LogoLoader.class
+websocket\PolitecWebSocketClient.class
 ui\RightPanel.class
+ui\MainFrame$1.class
 service\Configuracao.class
+service\UsoUsb.class
 Main.class
 service\DatabaseConnection.class
 ui\MainFrame.class
@@ -10,3 +13,4 @@ ui\TokenPanel.class
 config\ConfigManager.class
 service\UsbService.class
 listener\UsbListener.class
+service\UsoUsbService.class
