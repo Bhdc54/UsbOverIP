@@ -107,62 +107,112 @@ public class UsbService {
         proc.waitFor();
         return null;
     }
-    public void detachAll() {
+    public void detachAllDevices() {
     try {
-        // 1) Descobre todas as portas "In use"
-        ArrayList<String> ports = new ArrayList<>();
+        // 1) Descobre todas as portas em uso nesse CLIENTE
         ProcessBuilder pb = new ProcessBuilder(USBIP_PATH, "port");
         pb.redirectErrorStream(true);
         Process proc = pb.start();
 
-        try (BufferedReader reader =
-                 new BufferedReader(new InputStreamReader(proc.getInputStream()))) {
+        BufferedReader reader =
+                new BufferedReader(new InputStreamReader(proc.getInputStream()));
 
-            String line;
-            while ((line = reader.readLine()) != null) {
-                line = line.trim();
-                // Ex.: "Port 0: <Port in Use> ..."
-                if (line.startsWith("Port ") && line.toLowerCase().contains("in use")) {
-                    int i0 = "Port ".length();
-                    int i1 = line.indexOf(':', i0);
-                    if (i1 > i0) {
-                        String portNum = line.substring(i0, i1).trim();
-                        ports.add(portNum);
-                    }
+        List<String> ports = new ArrayList<>();
+        String line;
+
+        while ((line = reader.readLine()) != null) {
+            line = line.trim();
+            // linhas típicas: "Port 0: <some info>"
+            if (line.startsWith("Port ") && line.contains(":")) {
+                String[] parts = line.split(" ");
+                // parts[1] vem tipo "0:"
+                String portNumber = parts[1].replace(":", "").trim();
+                ports.add(portNumber);
+            }
+        }
+
+        proc.waitFor();
+
+        // 2) Faz detach em TODAS as portas encontradas
+        for (String port : ports) {
+            System.out.println("[UsbService] Detach da porta " + port);
+            ProcessBuilder detachPb =
+                    new ProcessBuilder(USBIP_PATH, "detach", "--port", port);
+            detachPb.redirectErrorStream(true);
+            Process detachProc = detachPb.start();
+            detachProc.waitFor();
+        }
+
+    } catch (Exception e) {
+        System.out.println("[UsbService] Erro ao executar detachAllDevices()");
+        e.printStackTrace();
+    }
+    }
+    public Set<String> listarBusidsAnexados() {
+    Set<String> anexados = new HashSet<>();
+
+    try {
+        ProcessBuilder pb = new ProcessBuilder(USBIP_PATH, "port");
+        pb.redirectErrorStream(true);
+        Process proc = pb.start();
+
+        BufferedReader reader = new BufferedReader(new InputStreamReader(proc.getInputStream()));
+        String line;
+        String busidAtual = null;
+
+        while ((line = reader.readLine()) != null) {
+            line = line.trim();
+
+            // Exemplo típico de saída do usbip-win:
+            // Port 0: <some info>
+            //   remote busid 1-1.3 (xxx:yyyy)
+            //
+            if (line.startsWith("remote busid")) {
+                // pega depois de "remote busid "
+                String[] parts = line.split("\\s+");
+                if (parts.length >= 3) {
+                    String busid = parts[2].trim();   // normalmente vem "1-1.3"
+                    // só por segurança tira dois-pontos se tiver
+                    busid = busid.replace(":", "");
+                    anexados.add(busid);
                 }
             }
         }
-        proc.waitFor();
 
-        // 2) Faz detach em cada porta em uso
-        for (String port : ports) {
-            try {
-                ProcessBuilder dpb = new ProcessBuilder(USBIP_PATH, "detach", "--port", port);
-                dpb.inheritIO();
-                Process p = dpb.start();
-                p.waitFor();
-                System.out.println("Dettach realizado na porta: " + port);
-            } catch (Exception ex) {
-                ex.printStackTrace();
-            }
-        }
+        proc.waitFor();
+    } catch (Exception e) {
+        System.out.println("[UsbService] Erro ao listar busids anexados");
+        e.printStackTrace();
+    }
+
+    return anexados;
+}
+public void reexportUsb(String busid) {
+
+    try {
+
+        ProcessBuilder unbind = new ProcessBuilder(
+                "ssh",
+                "pi@172.20.41.61",
+                "sudo usbip unbind -b " + busid
+        );
+
+        Process p1 = unbind.start();
+        p1.waitFor();
+
+        ProcessBuilder bind = new ProcessBuilder(
+                "ssh",
+                "pi@172.20.41.61",
+                "sudo usbip bind -b " + busid
+        );
+
+        Process p2 = bind.start();
+        p2.waitFor();
+
+        System.out.println("USB reexportado: " + busid);
+
     } catch (Exception e) {
         e.printStackTrace();
     }
 }
-        public void detachAllDevices() {
-        try {
-            ArrayList<String> dispositivos = listUsbDevices();
-            for (String disp : dispositivos) {
-                String busid = disp.split(" - ")[0].trim();
-                detachUsbDevice(busid);
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-    }
-
 }
-
-
-

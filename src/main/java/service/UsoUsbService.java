@@ -25,7 +25,7 @@ public class UsoUsbService {
         }
     }
 
-    // MARCA COMO LIBERADO
+    // MARCA COMO LIBERADO (por busid)
     public void encerrarUso(String busid) {
         String sql =
             "UPDATE uso_usb SET em_uso = FALSE " +
@@ -42,7 +42,7 @@ public class UsoUsbService {
         }
     }
 
-    // BUSCA USO ATIVO POR BUSID (se estiver em uso, retorna; senão, null)
+    // BUSCA USO ATIVO POR BUSID
     public UsoUsb buscarUsoAtivo(String busid) {
         String sql =
             "SELECT id, busid, usuario, ip_maquina, inicio_uso " +
@@ -71,10 +71,9 @@ public class UsoUsbService {
         return null;
     }
 
-    // 🔹 NOVO: lista todos os usos ATIVOS (em_uso = TRUE)
+    // LISTA TODOS USOS ATIVOS (para a lógica do LeftPanel)
     public List<UsoUsb> listarUsosAtivos() {
         List<UsoUsb> lista = new ArrayList<>();
-
         String sql =
             "SELECT id, busid, usuario, ip_maquina, inicio_uso " +
             "FROM uso_usb WHERE em_uso = TRUE";
@@ -82,6 +81,36 @@ public class UsoUsbService {
         try (Connection conn = DatabaseConnection.getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql);
              ResultSet rs = stmt.executeQuery()) {
+
+            while (rs.next()) {
+                UsoUsb uso = new UsoUsb();
+                uso.setId(rs.getInt("id"));
+                uso.setBusid(rs.getString("busid"));
+                uso.setUsuario(rs.getString("usuario"));
+                uso.setIpMaquina(rs.getString("ip_maquina"));
+                uso.setInicioUso(rs.getTimestamp("inicio_uso"));
+                lista.add(uso);
+            }
+
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+
+        return lista;
+    }
+
+    // *** NOVO *** – lista apenas os usos ativos desta máquina (por IP)
+    public List<UsoUsb> listarUsosAtivosPorIp(String ipMaquina) {
+        List<UsoUsb> lista = new ArrayList<>();
+        String sql =
+            "SELECT id, busid, usuario, ip_maquina, inicio_uso " +
+            "FROM uso_usb WHERE em_uso = TRUE AND ip_maquina = ?";
+
+        try (Connection conn = DatabaseConnection.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+
+            stmt.setString(1, ipMaquina);
+            ResultSet rs = stmt.executeQuery();
 
             while (rs.next()) {
                 UsoUsb uso = new UsoUsb();

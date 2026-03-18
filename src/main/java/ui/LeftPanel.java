@@ -113,6 +113,27 @@ public class LeftPanel extends JPanel {
         JScrollPane scrollPane = new JScrollPane(devicesPanel);
         scrollPane.setBorder(null);
         add(scrollPane, BorderLayout.CENTER);
+        // desenvolvido por 
+        JPanel footerPanel = new JPanel(new BorderLayout());
+        footerPanel.setBackground(new Color(10, 40, 90));
+        footerPanel.setBorder(BorderFactory.createEmptyBorder(5, 10, 5, 10));
+
+        // lado esquerdo (versão)
+        JLabel versaoLabel = new JLabel("Versão 1.0");
+        versaoLabel.setForeground(new Color(180, 180, 180));
+        versaoLabel.setFont(new Font("Segoe UI", Font.PLAIN, 11));
+
+        // lado direito (crédito)
+        JLabel devLabel = new JLabel("© 2026 - GPC | Brunno Camargo");
+        devLabel.setForeground(new Color(180, 180, 180));
+        devLabel.setFont(new Font("Segoe UI", Font.PLAIN, 11));
+
+        // adiciona nos lados
+        footerPanel.add(versaoLabel, BorderLayout.WEST);
+        footerPanel.add(devLabel, BorderLayout.EAST);
+
+        // adiciona no painel principal
+add(footerPanel, BorderLayout.SOUTH);
 
         // primeira carga
         atualizarListaDispositivos();
@@ -128,17 +149,13 @@ public class LeftPanel extends JPanel {
     // WEBSOCKET CLIENT
     // ============================
     private void iniciarWebSocket() {
-        // mesmo IP do Raspberry que você usa no usbip
         String wsUrl = "ws://172.20.41.61:8080";  // ajuste se esse IP mudar
 
         try {
             wsClient = new PolitecWebSocketClient(wsUrl);
 
-            // sempre que qualquer mensagem chegar → recarrega a lista
             wsClient.setOnMessage(msg -> {
                 System.out.println("[WS-LeftPanel] Mensagem recebida: " + msg);
-
-                // garante que a UI seja atualizada na EDT do Swing
                 SwingUtilities.invokeLater(this::atualizarListaDispositivos);
             });
 
@@ -168,7 +185,7 @@ public class LeftPanel extends JPanel {
     // ============================
     private void atualizarListaDispositivos() {
         devicesPanel.removeAll();
-
+        
         ArrayList<String> dispositivosFisicos = new ArrayList<>();
         try {
             dispositivosFisicos = usbService.listUsbDevices();
@@ -189,27 +206,47 @@ public class LeftPanel extends JPanel {
             return;
         }
 
+        // Usos ativos no banco
         List<UsoUsb> usosAtivos = usoUsbService.listarUsosAtivos();
-        Set<String> busidsFisicos = new HashSet<>();
 
-        // 1) monta cards para todos dispositivos listados pelo Rasp
+        // Busids que o usbip.exe diz que estão anexados neste cliente
+        Set<String> busidsAnexados = usbService.listarBusidsAnexados();
+
+        // Conjunto para não duplicar cards
+        Set<String> busidsComCard = new HashSet<>();
+
+        // 1) Cria cards para os dispositivos físicos atuais
         for (String disp : dispositivosFisicos) {
             String busid = disp.split(" - ")[0].trim();
-            busidsFisicos.add(busid);
+            busidsComCard.add(busid);
 
             JPanel card = criarCardDispositivo(disp);
             devicesPanel.add(card);
             devicesPanel.add(Box.createRigidArea(new Dimension(0, 8)));
         }
 
-        // 2) adiciona cards “EM USO” para usos ativos que não aparecem na lista física
+        // 2) Garante que todo uso ativo apareça, mesmo que o dispositivo
+        //    não esteja na lista física (por exemplo, ainda anexado a outro cliente).
         for (UsoUsb uso : usosAtivos) {
             String busid = uso.getBusid();
-            if (!busidsFisicos.contains(busid)) {
+
+            // Se o dispositivo NÃO está mais anexado para este cliente
+            // e apareceu de novo na lista física, limpamos o uso “fantasma”.
+            if (!busidsAnexados.contains(busid)
+                    && dispositivosFisicos.stream().anyMatch(d -> d.startsWith(busid + " "))) {
+                // Já voltou a ficar físico e não está anexado -> libera no banco
+                usoUsbService.encerrarUso(busid);
+                continue; // vai aparecer como livre na próxima atualização
+            }
+
+            // Se ainda não criamos card para ele, mostra como “EM USO”
+            if (!busidsComCard.contains(busid)) {
                 String dispFake = busid + " - EM USO";
                 JPanel card = criarCardDispositivo(dispFake);
                 devicesPanel.add(card);
                 devicesPanel.add(Box.createRigidArea(new Dimension(0, 8)));
+
+                busidsComCard.add(busid);
             }
         }
 
@@ -238,7 +275,15 @@ public class LeftPanel extends JPanel {
         panel.setBorder(BorderFactory.createEmptyBorder(8, 12, 8, 12));
         panel.setMaximumSize(new Dimension(Integer.MAX_VALUE, 70));
 
-        JLabel nomeDisp = new JLabel(disp);
+        // ---- renomeia Aladdin -> Cellebrite ----
+        String textoParaExibir = disp;
+        String dispLower = disp.toLowerCase();
+        if (dispLower.contains("aladdin")) {
+            String busidTmp = disp.split(" - ")[0].trim();
+            textoParaExibir = busidTmp + " - Cellebrite Physical Analyser";
+        }
+
+        JLabel nomeDisp = new JLabel(textoParaExibir);
         nomeDisp.setForeground(Color.WHITE);
         nomeDisp.setFont(new Font("Segoe UI", Font.BOLD, 13));
         panel.add(nomeDisp, BorderLayout.CENTER);
@@ -339,6 +384,8 @@ public class LeftPanel extends JPanel {
                     botao.setBackground(new Color(200, 60, 60));
                     botao.setEnabled(true);
                     botao.setToolTipText("Clique para liberar o dispositivo.");
+
+                    atualizarListaDispositivos();
                 }
 
             } else {
@@ -354,5 +401,26 @@ public class LeftPanel extends JPanel {
         });
 
         return panel;
+    }
+
+    // ============================
+    // ENCERRAR (timer + websocket)
+    // ============================
+    public void encerrar() {
+        try {
+            if (autoRefreshTimer != null) {
+                autoRefreshTimer.stop();
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+
+        try {
+            if (wsClient != null && wsClient.isOpen()) {
+                wsClient.close();
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
     }
 }
