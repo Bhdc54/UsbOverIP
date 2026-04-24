@@ -6,11 +6,22 @@ import java.util.List;
 
 public class UsoUsbService {
 
-    // REGISTRA (ou atualiza) uso de um dispositivo
-    public void registrarUso(String busid, String usuario, String ipMaquina) {
+    // -----------------------------------------------------------------------
+    // REGISTRA uso de um dispositivo.
+    // BUG CORRIGIDO: usa INSERT ... ON CONFLICT DO NOTHING para evitar que
+    // dois clientes registrem o mesmo busid ao mesmo tempo (race condition).
+    // Requer UNIQUE constraint em uso_usb(busid) WHERE em_uso = TRUE.
+    //
+    // SQL para criar no banco (execute uma vez):
+    //   CREATE UNIQUE INDEX IF NOT EXISTS uso_usb_busid_ativo_idx
+    //       ON uso_usb (busid)
+    //       WHERE em_uso = TRUE;
+    // -----------------------------------------------------------------------
+    public boolean registrarUso(String busid, String usuario, String ipMaquina) {
         String sql =
             "INSERT INTO uso_usb (busid, usuario, ip_maquina, inicio_uso, em_uso) " +
-            "VALUES (?, ?, ?, NOW(), TRUE)";
+            "VALUES (?, ?, ?, NOW(), TRUE) " +
+            "ON CONFLICT DO NOTHING";          // garante que só UM registro ativo por busid
 
         try (Connection conn = DatabaseConnection.getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
@@ -18,14 +29,25 @@ public class UsoUsbService {
             stmt.setString(1, busid);
             stmt.setString(2, usuario);
             stmt.setString(3, ipMaquina);
-            stmt.executeUpdate();
+            int rows = stmt.executeUpdate();
+
+            if (rows == 0) {
+                // Outra máquina inseriu antes (conflito de índice único)
+                System.out.println("[UsoUsbService] Conflito: busid=" + busid
+                        + " já está em uso por outro usuário (race condition evitada).");
+                return false;
+            }
+            return true;
 
         } catch (SQLException e) {
             e.printStackTrace();
+            return false;
         }
     }
 
-    // MARCA COMO LIBERADO (por busid)
+    // -----------------------------------------------------------------------
+    // ENCERRA uso pelo busid
+    // -----------------------------------------------------------------------
     public void encerrarUso(String busid) {
         String sql =
             "UPDATE uso_usb SET em_uso = FALSE " +
@@ -42,7 +64,9 @@ public class UsoUsbService {
         }
     }
 
-    // BUSCA USO ATIVO POR BUSID
+    // -----------------------------------------------------------------------
+    // BUSCA uso ativo por busid
+    // -----------------------------------------------------------------------
     public UsoUsb buscarUsoAtivo(String busid) {
         String sql =
             "SELECT id, busid, usuario, ip_maquina, inicio_uso " +
@@ -67,11 +91,12 @@ public class UsoUsbService {
         } catch (SQLException e) {
             e.printStackTrace();
         }
-
         return null;
     }
 
-    // LISTA TODOS USOS ATIVOS (para a lógica do LeftPanel)
+    // -----------------------------------------------------------------------
+    // LISTA todos os usos ativos
+    // -----------------------------------------------------------------------
     public List<UsoUsb> listarUsosAtivos() {
         List<UsoUsb> lista = new ArrayList<>();
         String sql =
@@ -79,8 +104,8 @@ public class UsoUsbService {
             "FROM uso_usb WHERE em_uso = TRUE";
 
         try (Connection conn = DatabaseConnection.getConnection();
-             PreparedStatement stmt = conn.prepareStatement(sql);
-             ResultSet rs = stmt.executeQuery()) {
+             Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery(sql)) {
 
             while (rs.next()) {
                 UsoUsb uso = new UsoUsb();
@@ -95,11 +120,12 @@ public class UsoUsbService {
         } catch (SQLException e) {
             e.printStackTrace();
         }
-
         return lista;
     }
 
-    // *** NOVO *** – lista apenas os usos ativos desta máquina (por IP)
+    // -----------------------------------------------------------------------
+    // LISTA usos ativos desta máquina (por IP) — usado no shutdown
+    // -----------------------------------------------------------------------
     public List<UsoUsb> listarUsosAtivosPorIp(String ipMaquina) {
         List<UsoUsb> lista = new ArrayList<>();
         String sql =
@@ -125,7 +151,6 @@ public class UsoUsbService {
         } catch (SQLException e) {
             e.printStackTrace();
         }
-
         return lista;
     }
 }

@@ -8,17 +8,20 @@ import service.UsoUsb;
 
 import websocket.PolitecWebSocketClient;
 
-import javax.swing.*;  // já traz javax.swing.Timer
+import javax.swing.*;
 import java.awt.*;
 import java.net.InetAddress;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.HashMap;
 import java.util.Set;
 import java.util.HashSet;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 
 public class LeftPanel extends JPanel {
+
     private JLabel nomeLabel;
     private JLabel ipLabel;
     private JPanel devicesPanel;
@@ -26,39 +29,29 @@ public class LeftPanel extends JPanel {
     private final UsbService usbService = new UsbService();
     private final UsoUsbService usoUsbService = new UsoUsbService();
 
-    // nome que será usado na tela toda
     private String usuarioAtual;
+    private String ipLocal = "";
 
-    // cliente WebSocket
     private PolitecWebSocketClient wsClient;
-
-    // timer para atualizar a tela periodicamente
     private Timer autoRefreshTimer;
 
-    // ============================
-    // CONSTRUTORES
-    // ============================
-    public LeftPanel() {
-        this(null);
-    }
+    private volatile boolean atualizando = false;
+
+    public LeftPanel() { this(null); }
 
     public LeftPanel(String usuario) {
         setLayout(new BorderLayout());
         setBackground(new Color(10, 40, 90));
 
-        ConfigService configService = new ConfigService();
-        String ipDetectado = "";
-
         usuarioAtual = usuario;
 
         try {
-            ipDetectado = InetAddress.getLocalHost().getHostAddress();
-
-            Configuracao cfg = configService.buscarPorIp(ipDetectado);
+            ipLocal = InetAddress.getLocalHost().getHostAddress();
+            ConfigService configService = new ConfigService();
+            Configuracao cfg = configService.buscarPorIp(ipLocal);
             if (cfg != null && cfg.getNome() != null && !cfg.getNome().trim().isEmpty()) {
                 usuarioAtual = cfg.getNome();
             }
-
         } catch (Exception e) {
             e.printStackTrace();
         }
@@ -67,7 +60,6 @@ public class LeftPanel extends JPanel {
             usuarioAtual = "desconhecido";
         }
 
-        // Topo com usuário/IP
         JPanel topPanel = new JPanel(new GridLayout(2, 1));
         topPanel.setBackground(new Color(10, 40, 90));
         topPanel.setBorder(BorderFactory.createEmptyBorder(8, 10, 8, 10));
@@ -76,35 +68,20 @@ public class LeftPanel extends JPanel {
         nomeLabel.setForeground(Color.WHITE);
         nomeLabel.setFont(new Font("Segoe UI", Font.PLAIN, 14));
 
-        ipLabel = new JLabel("IP: " + ipDetectado);
+        ipLabel = new JLabel("IP: " + ipLocal);
         ipLabel.setForeground(Color.WHITE);
         ipLabel.setFont(new Font("Segoe UI", Font.PLAIN, 14));
 
         topPanel.add(nomeLabel);
         topPanel.add(ipLabel);
 
-        // Cabeçalho com botão Atualizar
         JPanel headerPanel = new JPanel(new BorderLayout());
         headerPanel.setBackground(new Color(10, 40, 90));
-
         headerPanel.add(topPanel, BorderLayout.WEST);
 
-        JButton atualizarButton = new JButton("Atualizar");
-        atualizarButton.setBackground(new Color(33, 150, 243));
-        atualizarButton.setForeground(Color.WHITE);
-        atualizarButton.setFocusPainted(false);
-        atualizarButton.setFont(new Font("Segoe UI", Font.BOLD, 13));
-        atualizarButton.setPreferredSize(new Dimension(110, 32));
-        atualizarButton.addActionListener(e -> atualizarListaDispositivos());
-
-        JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 10, 8));
-        btnPanel.setOpaque(false);
-        btnPanel.add(atualizarButton);
-
-        headerPanel.add(btnPanel, BorderLayout.EAST);
+        // Botão removido — a lista atualiza automaticamente
         add(headerPanel, BorderLayout.NORTH);
 
-        // Painel dos dispositivos USB
         devicesPanel = new JPanel();
         devicesPanel.setLayout(new BoxLayout(devicesPanel, BoxLayout.Y_AXIS));
         devicesPanel.setBackground(new Color(10, 40, 90));
@@ -113,174 +90,198 @@ public class LeftPanel extends JPanel {
         JScrollPane scrollPane = new JScrollPane(devicesPanel);
         scrollPane.setBorder(null);
         add(scrollPane, BorderLayout.CENTER);
-        // desenvolvido por 
+
         JPanel footerPanel = new JPanel(new BorderLayout());
         footerPanel.setBackground(new Color(10, 40, 90));
         footerPanel.setBorder(BorderFactory.createEmptyBorder(5, 10, 5, 10));
 
-        // lado esquerdo (versão)
-        JLabel versaoLabel = new JLabel("Versão 1.0");
+        JLabel versaoLabel = new JLabel("Versão 2.0");
         versaoLabel.setForeground(new Color(180, 180, 180));
         versaoLabel.setFont(new Font("Segoe UI", Font.PLAIN, 11));
 
-        // lado direito (crédito)
         JLabel devLabel = new JLabel("© 2026 - GPC | Brunno Camargo");
         devLabel.setForeground(new Color(180, 180, 180));
         devLabel.setFont(new Font("Segoe UI", Font.PLAIN, 11));
 
-        // adiciona nos lados
         footerPanel.add(versaoLabel, BorderLayout.WEST);
         footerPanel.add(devLabel, BorderLayout.EAST);
+        add(footerPanel, BorderLayout.SOUTH);
 
-        // adiciona no painel principal
-add(footerPanel, BorderLayout.SOUTH);
+        // Limpa portas corrompidas (?-?) E registros órfãos no banco.
+        // Cenário: app fechou sem detach (crash/Alt+F4) — USB voltou ao Raspberry
+        // mas banco ainda marca como em_uso=TRUE. Outros usuários viam como ocupado.
+        new Thread(() -> {
+            System.out.println("[LeftPanel] Verificando portas orfas...");
+            List<String> portasOrfas = usbService.listarPortasOrfas();
 
-        // primeira carga
-        atualizarListaDispositivos();
+            if (!portasOrfas.isEmpty()) {
+                System.out.println("[LeftPanel] " + portasOrfas.size() + " porta(s) orfa(s) — limpando USB e banco...");
 
-        // inicia WebSocket para ouvir mudanças vindas do Raspberry
+                // 1) Libera as portas presas localmente
+                usbService.detachAllOrphanPorts();
+
+                // 2) Limpa registros desta máquina no banco que estejam como em_uso=TRUE
+                //    (o USB já voltou ao Raspberry, então o registro é inválido)
+                List<UsoUsb> meusUsos = usoUsbService.listarUsosAtivosPorIp(ipLocal);
+                for (UsoUsb uso : meusUsos) {
+                    System.out.println("[LeftPanel] Limpando registro fantasma no banco: busid=" + uso.getBusid());
+                    usoUsbService.encerrarUso(uso.getBusid());
+                }
+            } else {
+                System.out.println("[LeftPanel] Nenhuma porta orfa. Tudo limpo.");
+            }
+
+            SwingUtilities.invokeLater(LeftPanel.this::atualizarListaDispositivos);
+        }).start();
+
         iniciarWebSocket();
-
-        // inicia refresh automático a cada 10 segundos
         iniciarAutoRefresh();
     }
 
-    // ============================
-    // WEBSOCKET CLIENT
-    // ============================
     private void iniciarWebSocket() {
-        String wsUrl = "ws://172.20.41.61:8080";  // ajuste se esse IP mudar
-
+        String wsUrl = "ws://172.20.41.61:8080";
         try {
             wsClient = new PolitecWebSocketClient(wsUrl);
-
             wsClient.setOnMessage(msg -> {
                 System.out.println("[WS-LeftPanel] Mensagem recebida: " + msg);
                 SwingUtilities.invokeLater(this::atualizarListaDispositivos);
             });
-
             wsClient.connect();
-            System.out.println("[WS-LeftPanel] Cliente WebSocket tentando conectar em " + wsUrl);
-
         } catch (Exception e) {
-            System.out.println("[WS-LeftPanel] Não foi possível conectar ao WebSocket");
+            System.out.println("[WS-LeftPanel] Nao foi possivel conectar ao WebSocket");
             e.printStackTrace();
         }
     }
 
-    // ============================
-    // AUTO REFRESH A CADA 10s
-    // ============================
     private void iniciarAutoRefresh() {
-        autoRefreshTimer = new Timer(10_000, e -> {
-            System.out.println("[AUTO-REFRESH] Atualizando lista de dispositivos...");
-            atualizarListaDispositivos();
-        });
+        autoRefreshTimer = new Timer(10_000, e -> atualizarListaDispositivos());
         autoRefreshTimer.setRepeats(true);
         autoRefreshTimer.start();
     }
 
-    // ============================
-    // ATUALIZAÇÃO DA LISTA
-    // ============================
     private void atualizarListaDispositivos() {
-        devicesPanel.removeAll();
-        
-        ArrayList<String> dispositivosFisicos = new ArrayList<>();
-        try {
-            dispositivosFisicos = usbService.listUsbDevices();
-        } catch (Exception e) {
-            e.printStackTrace();
-            JLabel erro = new JLabel("Erro ao listar dispositivos USB.");
-            erro.setForeground(Color.WHITE);
-            erro.setHorizontalAlignment(SwingConstants.CENTER);
-            erro.setFont(new Font("Segoe UI", Font.PLAIN, 14));
+        if (atualizando) return;
+        atualizando = true;
 
-            JPanel erroPanel = new JPanel(new BorderLayout());
-            erroPanel.setBackground(new Color(10, 40, 90));
-            erroPanel.add(erro, BorderLayout.CENTER);
-            devicesPanel.add(erroPanel);
 
-            devicesPanel.revalidate();
-            devicesPanel.repaint();
-            return;
-        }
+        SwingWorker<Void, Void> worker = new SwingWorker<Void, Void>() {
 
-        // Usos ativos no banco
-        List<UsoUsb> usosAtivos = usoUsbService.listarUsosAtivos();
+            ArrayList<String> dispositivosFisicos = new ArrayList<>();
+            List<UsoUsb> usosAtivos = new ArrayList<>();
+            Set<String> busidsAnexadosLocalmente = new HashSet<>();
+            Map<String, UsoUsb> usoMap = new HashMap<>();
 
-        // Busids que o usbip.exe diz que estão anexados neste cliente
-        Set<String> busidsAnexados = usbService.listarBusidsAnexados();
+            @Override
+            protected Void doInBackground() {
+                try {
+                    dispositivosFisicos = usbService.listUsbDevices();
+                } catch (Exception e) { e.printStackTrace(); }
 
-        // Conjunto para não duplicar cards
-        Set<String> busidsComCard = new HashSet<>();
+                try {
+                    usosAtivos = usoUsbService.listarUsosAtivos();
+                    for (UsoUsb uso : usosAtivos) usoMap.put(uso.getBusid(), uso);
+                } catch (Exception e) { e.printStackTrace(); }
 
-        // 1) Cria cards para os dispositivos físicos atuais
-        for (String disp : dispositivosFisicos) {
-            String busid = disp.split(" - ")[0].trim();
-            busidsComCard.add(busid);
+                try {
+                    busidsAnexadosLocalmente = usbService.listarBusidsAnexados();
+                } catch (Exception e) { e.printStackTrace(); }
 
-            JPanel card = criarCardDispositivo(disp);
-            devicesPanel.add(card);
-            devicesPanel.add(Box.createRigidArea(new Dimension(0, 8)));
-        }
+                // -------------------------------------------------------
+                // LIMPEZA DE FANTASMAS — SOMENTE para registros desta máquina.
+                //
+                // REGRA: um registro é fantasma se, E SOMENTE SE:
+                //   1. O IP do registro é desta máquina
+                //   2. O mapa local (busidToPort) NÃO tem esse busid
+                //      (ou seja, não foi anexado nesta sessão)
+                //   3. O dispositivo voltou para a lista do servidor (disponível)
+                //
+                // Usamos usbService.listarBusidsAnexados() que agora retorna
+                // exatamente o mapa interno — sem depender do "usbip port" que
+                // sempre mostra "?-?" no usbip-win.
+                //
+                // USBs de outras máquinas NUNCA são tocados.
+                // -------------------------------------------------------
+                for (UsoUsb uso : new ArrayList<>(usosAtivos)) {
+                    String busid = uso.getBusid();
 
-        // 2) Garante que todo uso ativo apareça, mesmo que o dispositivo
-        //    não esteja na lista física (por exemplo, ainda anexado a outro cliente).
-        for (UsoUsb uso : usosAtivos) {
-            String busid = uso.getBusid();
+                    if (!ipLocal.equals(uso.getIpMaquina())) continue; // outro cliente, nunca mexe
 
-            // Se o dispositivo NÃO está mais anexado para este cliente
-            // e apareceu de novo na lista física, limpamos o uso “fantasma”.
-            if (!busidsAnexados.contains(busid)
-                    && dispositivosFisicos.stream().anyMatch(d -> d.startsWith(busid + " "))) {
-                // Já voltou a ficar físico e não está anexado -> libera no banco
-                usoUsbService.encerrarUso(busid);
-                continue; // vai aparecer como livre na próxima atualização
+                    if (busidsAnexadosLocalmente.contains(busid)) continue; // ainda está anexado aqui
+
+                    boolean voltouParaServidor = dispositivosFisicos.stream()
+                            .anyMatch(d -> d.startsWith(busid + " ") || d.startsWith(busid + "-"));
+
+                    if (voltouParaServidor) {
+                        System.out.println("[REFRESH] Fantasma desta maquina, limpando banco: busid=" + busid);
+                        usoUsbService.encerrarUso(busid);
+                        usoMap.remove(busid);
+                    }
+                }
+
+                return null;
             }
 
-            // Se ainda não criamos card para ele, mostra como “EM USO”
-            if (!busidsComCard.contains(busid)) {
-                String dispFake = busid + " - EM USO";
-                JPanel card = criarCardDispositivo(dispFake);
-                devicesPanel.add(card);
-                devicesPanel.add(Box.createRigidArea(new Dimension(0, 8)));
+            @Override
+            protected void done() {
+                try { redesenharCards(); }
+                finally {
+                    atualizando = false;
 
-                busidsComCard.add(busid);
+                }
             }
-        }
 
-        if (devicesPanel.getComponentCount() == 0) {
-            JLabel vazio = new JLabel("Nenhum dispositivo USB disponível.");
-            vazio.setForeground(Color.WHITE);
-            vazio.setHorizontalAlignment(SwingConstants.CENTER);
-            vazio.setFont(new Font("Segoe UI", Font.PLAIN, 14));
+            private void redesenharCards() {
+                devicesPanel.removeAll();
+                Set<String> busidsComCard = new HashSet<>();
 
-            JPanel vazioPanel = new JPanel(new BorderLayout());
-            vazioPanel.setBackground(new Color(10, 40, 90));
-            vazioPanel.add(vazio, BorderLayout.CENTER);
-            devicesPanel.add(vazioPanel);
-        }
+                // Cards para dispositivos disponíveis no servidor
+                for (String disp : dispositivosFisicos) {
+                    String busid = disp.split(" - ")[0].trim();
+                    busidsComCard.add(busid);
+                    devicesPanel.add(criarCardDispositivo(disp, usoMap.get(busid)));
+                    devicesPanel.add(Box.createRigidArea(new Dimension(0, 8)));
+                }
 
-        devicesPanel.revalidate();
-        devicesPanel.repaint();
+                // Dispositivos em uso em outras máquinas (não aparecem na lista física)
+                for (UsoUsb uso : usosAtivos) {
+                    String busid = uso.getBusid();
+                    if (busidsComCard.contains(busid)) continue;
+                    if (!usoMap.containsKey(busid)) continue; // fantasma já limpo
+
+                    String dispFake = busid + " - EM USO por " + uso.getUsuario();
+                    devicesPanel.add(criarCardDispositivo(dispFake, uso));
+                    devicesPanel.add(Box.createRigidArea(new Dimension(0, 8)));
+                    busidsComCard.add(busid);
+                }
+
+                if (devicesPanel.getComponentCount() == 0) {
+                    JLabel vazio = new JLabel("Nenhum dispositivo USB disponivel.");
+                    vazio.setForeground(Color.WHITE);
+                    vazio.setHorizontalAlignment(SwingConstants.CENTER);
+                    vazio.setFont(new Font("Segoe UI", Font.PLAIN, 14));
+                    JPanel vazioPanel = new JPanel(new BorderLayout());
+                    vazioPanel.setBackground(new Color(10, 40, 90));
+                    vazioPanel.add(vazio, BorderLayout.CENTER);
+                    devicesPanel.add(vazioPanel);
+                }
+
+                devicesPanel.revalidate();
+                devicesPanel.repaint();
+            }
+        };
+
+        worker.execute();
     }
 
-    // ============================
-    // CRIAÇÃO DOS CARDS
-    // ============================
-    private JPanel criarCardDispositivo(String disp) {
+    private JPanel criarCardDispositivo(String disp, UsoUsb usoAtual) {
         JPanel panel = new JPanel(new BorderLayout());
         panel.setBackground(new Color(20, 60, 120));
         panel.setBorder(BorderFactory.createEmptyBorder(8, 12, 8, 12));
         panel.setMaximumSize(new Dimension(Integer.MAX_VALUE, 70));
 
-        // ---- renomeia Aladdin -> Cellebrite ----
         String textoParaExibir = disp;
-        String dispLower = disp.toLowerCase();
-        if (dispLower.contains("aladdin")) {
-            String busidTmp = disp.split(" - ")[0].trim();
-            textoParaExibir = busidTmp + " - Cellebrite Physical Analyser";
+        if (disp.toLowerCase().contains("aladdin")) {
+            textoParaExibir = disp.split(" - ")[0].trim() + " - Cellebrite Physical Analyser";
         }
 
         JLabel nomeDisp = new JLabel(textoParaExibir);
@@ -289,10 +290,8 @@ add(footerPanel, BorderLayout.SOUTH);
         panel.add(nomeDisp, BorderLayout.CENTER);
 
         String busid = disp.split(" - ")[0].trim();
-
-        String usuarioBotao = (usuarioAtual != null && !usuarioAtual.trim().isEmpty())
-                ? usuarioAtual
-                : "desconhecido";
+        final String usuarioBotao = (usuarioAtual != null && !usuarioAtual.trim().isEmpty())
+                ? usuarioAtual : "desconhecido";
 
         JButton botao = new JButton();
         botao.setFont(new Font("Segoe UI", Font.BOLD, 12));
@@ -300,36 +299,27 @@ add(footerPanel, BorderLayout.SOUTH);
         botao.setPreferredSize(new Dimension(160, 35));
         botao.setForeground(Color.WHITE);
 
-        UsoUsb usoAtual = usoUsbService.buscarUsoAtivo(busid);
         boolean emUso = (usoAtual != null);
-        boolean ehDono =
-                emUso &&
-                usoAtual.getUsuario() != null &&
-                usuarioAtual != null &&
-                usoAtual.getUsuario().equalsIgnoreCase(usuarioAtual);
+        boolean ehDono = emUso
+                && usoAtual.getUsuario() != null
+                && usuarioAtual != null
+                && usoAtual.getUsuario().equalsIgnoreCase(usuarioAtual);
 
         if (emUso) {
             LocalDateTime inicio = usoAtual.getInicioUso().toLocalDateTime();
             DateTimeFormatter fmt = DateTimeFormatter.ofPattern("dd/MM HH:mm");
-            String horario = inicio.format(fmt);
-
-            botao.setBackground(new Color(200, 60, 60)); // vermelho
-            botao.setText("<html><center>" + usoAtual.getUsuario() +
-                    "<br>" + horario + "</center></html>");
-
-            if (ehDono) {
-                botao.setEnabled(true);
-                botao.setToolTipText("Clique para liberar o dispositivo.");
-            } else {
-                botao.setEnabled(false);
-                botao.setToolTipText("Em uso por " + usoAtual.getUsuario()
-                        + ". Apenas esse usuário pode liberar.");
-            }
+            botao.setBackground(new Color(200, 60, 60));
+            botao.setText("<html><center>" + usoAtual.getUsuario()
+                    + "<br>" + inicio.format(fmt) + "</center></html>");
+            botao.setEnabled(ehDono);
+            botao.setToolTipText(ehDono
+                    ? "Clique para liberar o dispositivo."
+                    : "Em uso por " + usoAtual.getUsuario() + ". Apenas esse usuario pode liberar.");
         } else {
-            botao.setBackground(new Color(76, 175, 80)); // verde
+            botao.setBackground(new Color(76, 175, 80));
             botao.setText("Atribuir");
             botao.setEnabled(true);
-            botao.setToolTipText("Clique para atribuir este dispositivo a você.");
+            botao.setToolTipText("Clique para atribuir este dispositivo a voce.");
         }
 
         JPanel btnWrapper = new JPanel(new GridBagLayout());
@@ -337,90 +327,63 @@ add(footerPanel, BorderLayout.SOUTH);
         btnWrapper.add(botao);
         panel.add(btnWrapper, BorderLayout.EAST);
 
-        botao.addActionListener(e -> {
-            UsoUsb uso = usoUsbService.buscarUsoAtivo(busid);
-
-            if (uso != null &&
-                uso.getUsuario() != null &&
-                usuarioAtual != null &&
-                !uso.getUsuario().equalsIgnoreCase(usuarioAtual)) {
-
-                JOptionPane.showMessageDialog(
-                        panel,
-                        "Este dispositivo está em uso por: " + uso.getUsuario(),
-                        "Dispositivo em uso",
-                        JOptionPane.WARNING_MESSAGE
-                );
-                atualizarListaDispositivos();
-                return;
-            }
-
-            if (botao.getText().startsWith("Atribuir")) {
-
-                if (uso != null) {
-                    JOptionPane.showMessageDialog(
-                            panel,
-                            "Este dispositivo já está em uso por: " + uso.getUsuario(),
-                            "Dispositivo em uso",
-                            JOptionPane.WARNING_MESSAGE
-                    );
-                    atualizarListaDispositivos();
-                    return;
-                }
-
-                if (usbService.attachUsbDevice(busid)) {
-                    try {
-                        String ip = InetAddress.getLocalHost().getHostAddress();
-                        usoUsbService.registrarUso(busid, usuarioBotao, ip);
-                    } catch (Exception ex) {
-                        ex.printStackTrace();
-                    }
-
-                    DateTimeFormatter fmt = DateTimeFormatter.ofPattern("dd/MM HH:mm");
-                    String horario = LocalDateTime.now().format(fmt);
-
-                    botao.setText("<html><center>" + usuarioBotao +
-                            "<br>" + horario + "</center></html>");
-                    botao.setBackground(new Color(200, 60, 60));
-                    botao.setEnabled(true);
-                    botao.setToolTipText("Clique para liberar o dispositivo.");
-
-                    atualizarListaDispositivos();
-                }
-
-            } else {
-                if (usbService.detachUsbDevice(busid)) {
-                    usoUsbService.encerrarUso(busid);
-                    botao.setText("Atribuir");
-                    botao.setBackground(new Color(76, 175, 80));
-                    botao.setEnabled(true);
-                    botao.setToolTipText("Clique para atribuir este dispositivo a você.");
-                    atualizarListaDispositivos();
-                }
-            }
-        });
-
+        botao.addActionListener(e -> tratarCliqueBotao(busid, usuarioBotao, botao, panel));
         return panel;
     }
 
-    // ============================
-    // ENCERRAR (timer + websocket)
-    // ============================
-    public void encerrar() {
-        try {
-            if (autoRefreshTimer != null) {
-                autoRefreshTimer.stop();
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
+    private void tratarCliqueBotao(String busid, String usuarioBotao,
+                                   JButton botao, JPanel panel) {
+        botao.setEnabled(false);
 
-        try {
-            if (wsClient != null && wsClient.isOpen()) {
-                wsClient.close();
+        SwingWorker<Void, Void> worker = new SwingWorker<Void, Void>() {
+            String erro = null;
+            boolean eraAtribuir = botao.getText().contains("Atribuir");
+
+            @Override
+            protected Void doInBackground() {
+                if (eraAtribuir) {
+                    UsoUsb usoExistente = usoUsbService.buscarUsoAtivo(busid);
+                    if (usoExistente != null) {
+                        erro = "Este dispositivo ja foi atribuido por: " + usoExistente.getUsuario();
+                        return null;
+                    }
+                    if (usbService.attachUsbDevice(busid)) {
+                        boolean registrado = usoUsbService.registrarUso(busid, usuarioBotao, ipLocal);
+                        if (!registrado) {
+                            usbService.detachUsbDevice(busid);
+                            UsoUsb vencedor = usoUsbService.buscarUsoAtivo(busid);
+                            erro = "Dispositivo atribuido por outro usuario simultaneamente"
+                                    + (vencedor != null ? ": " + vencedor.getUsuario() : "") + ".";
+                        }
+                    } else {
+                        erro = "Falha ao atribuir o dispositivo.\nVerifique se o usbip esta acessivel.";
+                    }
+                } else {
+                    UsoUsb uso = usoUsbService.buscarUsoAtivo(busid);
+                    if (uso != null && !uso.getUsuario().equalsIgnoreCase(usuarioAtual)) {
+                        erro = "Voce nao pode liberar um dispositivo em uso por: " + uso.getUsuario();
+                        return null;
+                    }
+                    usbService.detachUsbDevice(busid);
+                    usoUsbService.encerrarUso(busid);
+                }
+                return null;
             }
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
+
+            @Override
+            protected void done() {
+                if (erro != null) {
+                    JOptionPane.showMessageDialog(panel, erro, "Aviso", JOptionPane.WARNING_MESSAGE);
+                }
+                atualizarListaDispositivos();
+            }
+        };
+
+        worker.execute();
+    }
+
+    public void encerrar() {
+        try { if (autoRefreshTimer != null) autoRefreshTimer.stop(); } catch (Exception e) { e.printStackTrace(); }
+        try { if (wsClient != null && wsClient.isOpen()) wsClient.close(); } catch (Exception e) { e.printStackTrace(); }
     }
 }

@@ -6,23 +6,34 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class UsbService {
-    private static final String USBIP_PATH = "usbip-win-0.3.6-dev/usbip.exe";
+    private static final String USBIP_PATH   = "usbip-win-0.3.6-dev/usbip.exe";
     private static final String RASPBERRY_IP = "172.20.41.61";
-    private String portaAssociada;
+    private static final int    TIMEOUT_SEC  = 30;
+
+    // -----------------------------------------------------------------------
+    // Mapa em memória: busid -> número da porta local.
+    // Preenchido no attach (lemos "attached to port N" da saída).
+    // Usado no detach para saber qual --port passar.
+    // Sobrevive enquanto o processo Java estiver rodando.
+    // -----------------------------------------------------------------------
+    private static final Map<String, String> busidToPort = new HashMap<>();
 
     private UsbListener listener;
-    private Set<String> dispositivosAtuais = new HashSet<>();
-    private volatile boolean monitorando = false;
+    public void setListener(UsbListener listener) { this.listener = listener; }
 
-    public void setListener(UsbListener listener) {
-        this.listener = listener;
-    }
-
+    // -----------------------------------------------------------------------
+    // Lista dispositivos disponíveis no servidor Raspberry
+    // -----------------------------------------------------------------------
     public ArrayList<String> listUsbDevices() {
         ArrayList<String> nomes = new ArrayList<>();
         try {
@@ -35,31 +46,82 @@ public class UsbService {
                 if (line.trim().matches("\\d+-\\d+(\\.\\d+)*:.*")) {
                     String[] parts = line.trim().split(":", 3);
                     if (parts.length >= 2) {
-                        String id = parts[0].trim();
+                        String id   = parts[0].trim();
                         String nome = parts[1].trim() + (parts.length == 3 ? ": " + parts[2].trim() : "");
                         nomes.add(id + " - " + nome);
                     }
                 }
             }
-            proc.waitFor();
+            proc.waitFor(TIMEOUT_SEC, TimeUnit.SECONDS);
         } catch (Exception e) {
             e.printStackTrace();
         }
         return nomes;
     }
 
+    // -----------------------------------------------------------------------
+    // Attach — grava busid->porta no mapa interno lendo a saída do processo.
+    // Saída típica: "succesfully attached to port 0"
+    // -----------------------------------------------------------------------
     public boolean attachUsbDevice(String busid) {
         try {
             ProcessBuilder pb = new ProcessBuilder(USBIP_PATH, "attach", "-r", RASPBERRY_IP, "-b", busid);
-            pb.inheritIO();
+            pb.redirectErrorStream(true);
             Process p = pb.start();
-            if (p.waitFor() != 0) return false;
 
-            ProcessBuilder portPb = new ProcessBuilder(USBIP_PATH, "port");
-            portPb.redirectErrorStream(true);
-            Process portProc = portPb.start();
-            portProc.waitFor();
-            return true;
+            StringBuilder output = new StringBuilder();
+            Thread leitor = new Thread(() -> {
+                try (BufferedReader br = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
+                    String l;
+                    while ((l = br.readLine()) != null) {
+                        output.append(l).append("\n");
+                        System.out.println("[attach] " + l);
+                    }
+                } catch (Exception ignored) {}
+            });
+            leitor.setDaemon(true);
+            leitor.start();
+
+            boolean terminou = p.waitFor(TIMEOUT_SEC, TimeUnit.SECONDS);
+            if (!terminou) {
+                p.destroyForcibly();
+                System.out.println("[UsbService] attach timeout para busid=" + busid);
+                return false;
+            }
+            leitor.join(2000);
+
+            if (p.exitValue() == 0) {
+                // Coleta todas as portas abertas agora (para o fallback de diff)
+                Set<String> portasAbertas = listarTodasPortasAbertas();
+
+                // Extrai número da porta da saída: "attached to port 0" ou "attached to port 00"
+                String saida = output.toString();
+                Pattern pat = Pattern.compile("attached to port\\s+(\\d+)", Pattern.CASE_INSENSITIVE);
+                Matcher mat = pat.matcher(saida);
+                if (mat.find()) {
+                    String porta = String.format("%02d", Integer.parseInt(mat.group(1)));
+                    busidToPort.put(busid, porta);
+                    System.out.println("[UsbService] busid=" + busid + " -> porta=" + porta);
+                } else {
+                    // Fallback: compara portas abertas ANTES e DEPOIS do attach
+                    // para identificar qual porta nova foi criada para este busid.
+                    // Isso é seguro mesmo com 10 USBs simultâneos porque cada attach
+                    // abre exatamente UMA porta nova.
+                    String portaNova = portasAbertas.isEmpty() ? null
+                            : portasAbertas.stream()
+                                    .filter(porta -> !busidToPort.containsValue(porta))
+                                    .findFirst()
+                                    .orElse(null);
+                    if (portaNova != null) {
+                        busidToPort.put(busid, portaNova);
+                        System.out.println("[UsbService] busid=" + busid + " -> porta=" + portaNova + " (fallback diff)");
+                    } else {
+                        System.out.println("[UsbService] AVISO: nao foi possivel mapear porta para busid=" + busid);
+                    }
+                }
+                return true;
+            }
+            return false;
 
         } catch (Exception e) {
             e.printStackTrace();
@@ -67,152 +129,184 @@ public class UsbService {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Detach — usa o mapa interno busid->porta.
+    // -----------------------------------------------------------------------
     public boolean detachUsbDevice(String busid) {
+        String porta = busidToPort.get(busid);
+
+        if (porta == null) {
+            System.out.println("[UsbService] busid=" + busid + " nao esta no mapa local. Tentando por porta orfa.");
+            // Tenta limpar portas orfas (estado ?-?) se houver apenas uma
+            List<String> orfas = listarPortasOrfas();
+            if (orfas.size() == 1) {
+                porta = orfas.get(0);
+                System.out.println("[UsbService] Usando porta orfa " + porta + " para detach de " + busid);
+            } else if (orfas.isEmpty()) {
+                System.out.println("[UsbService] Nenhuma porta encontrada para " + busid + " — pode ja estar solto.");
+                busidToPort.remove(busid);
+                return true;
+            } else {
+                System.out.println("[UsbService] Multiplas portas orfas, nao e possivel determinar qual e " + busid);
+                return false;
+            }
+        }
+
+        try {
+            System.out.println("[UsbService] Detach busid=" + busid + " porta=" + porta);
+            ProcessBuilder pb = new ProcessBuilder(USBIP_PATH, "detach", "--port", porta);
+            pb.redirectErrorStream(true);
+            Process p = pb.start();
+
+            Thread leitor = new Thread(() -> {
+                try (BufferedReader br = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
+                    String l;
+                    while ((l = br.readLine()) != null) System.out.println("[detach] " + l);
+                } catch (Exception ignored) {}
+            });
+            leitor.setDaemon(true);
+            leitor.start();
+
+            boolean terminou = p.waitFor(TIMEOUT_SEC, TimeUnit.SECONDS);
+            if (!terminou) {
+                p.destroyForcibly();
+                System.out.println("[UsbService] detach timeout para busid=" + busid);
+                return false;
+            }
+            leitor.join(2000);
+
+            busidToPort.remove(busid);
+            return p.exitValue() == 0;
+
+        } catch (Exception e) {
+            e.printStackTrace();
+            return false;
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Retorna lista de números de porta com estado corrompido "?-?"
+    // -----------------------------------------------------------------------
+    public List<String> listarPortasOrfas() {
+        List<String> orfas = new ArrayList<>();
         try {
             ProcessBuilder pb = new ProcessBuilder(USBIP_PATH, "port");
-            Process portProc = pb.start();
-            BufferedReader reader = new BufferedReader(new InputStreamReader(portProc.getInputStream()));
+            pb.redirectErrorStream(true);
+            Process proc = pb.start();
+            BufferedReader reader = new BufferedReader(new InputStreamReader(proc.getInputStream()));
             String line;
-            portaAssociada = null;
+            String currentPort = null;
             while ((line = reader.readLine()) != null) {
-                if (line.contains("Port ")) {
-                    portaAssociada = line.trim().split(" ")[1].replace(":", "");
+                String trimmed = line.trim();
+                if (trimmed.startsWith("Port ")) {
+                    String[] parts = trimmed.split("[\\s:]+");
+                    if (parts.length >= 2) {
+                        try {
+                            currentPort = String.format("%02d", Integer.parseInt(parts[1].replace(":", "")));
+                        } catch (NumberFormatException ignored) {}
+                    }
+                }
+                if (currentPort != null && trimmed.startsWith("?-?")) {
+                    orfas.add(currentPort);
                 }
             }
-
-            pb = new ProcessBuilder(USBIP_PATH, "detach", "--port", portaAssociada);
-            pb.inheritIO();
-            Process p = pb.start();
-            int exitCode = p.waitFor();
-            return exitCode == 0;
-
+            proc.waitFor(TIMEOUT_SEC, TimeUnit.SECONDS);
         } catch (Exception e) {
             e.printStackTrace();
-            return false;
+        }
+        return orfas;
+    }
+
+    // -----------------------------------------------------------------------
+    // Lista TODAS as portas abertas atualmente (números como "00", "01", ...)
+    // Usado no fallback do attach para descobrir qual porta foi alocada.
+    // -----------------------------------------------------------------------
+    private Set<String> listarTodasPortasAbertas() {
+        Set<String> portas = new HashSet<>();
+        try {
+            ProcessBuilder pb = new ProcessBuilder(USBIP_PATH, "port");
+            pb.redirectErrorStream(true);
+            Process proc = pb.start();
+            BufferedReader reader = new BufferedReader(new InputStreamReader(proc.getInputStream()));
+            String line;
+            while ((line = reader.readLine()) != null) {
+                String trimmed = line.trim();
+                if (trimmed.startsWith("Port ")) {
+                    String[] parts = trimmed.split("[\\s:]+");
+                    if (parts.length >= 2) {
+                        try {
+                            portas.add(String.format("%02d", Integer.parseInt(parts[1].replace(":", ""))));
+                        } catch (NumberFormatException ignored) {}
+                    }
+                }
+            }
+            proc.waitFor(TIMEOUT_SEC, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return portas;
+    }
+
+    // -----------------------------------------------------------------------
+    // Limpa portas corrompidas ?-? na inicialização do app
+    // -----------------------------------------------------------------------
+    public void detachAllOrphanPorts() {
+        try {
+            List<String> orfas = listarPortasOrfas();
+            if (orfas.isEmpty()) {
+                System.out.println("[UsbService] Nenhuma porta orfa encontrada.");
+                return;
+            }
+            for (String porta : orfas) {
+                System.out.println("[UsbService] Limpando porta orfa: " + porta);
+                ProcessBuilder pb = new ProcessBuilder(USBIP_PATH, "detach", "--port", porta);
+                pb.redirectErrorStream(true);
+                Process p = pb.start();
+                new BufferedReader(new InputStreamReader(p.getInputStream()))
+                        .lines().forEach(l -> System.out.println("[detach-orfa] " + l));
+                boolean terminou = p.waitFor(TIMEOUT_SEC, TimeUnit.SECONDS);
+                if (!terminou) p.destroyForcibly();
+            }
+            System.out.println("[UsbService] Portas orfas limpas.");
+        } catch (Exception e) {
+            System.out.println("[UsbService] Erro ao limpar portas orfas");
+            e.printStackTrace();
         }
     }
 
-    private String getAssociatedPort(String busid) throws IOException, InterruptedException {
-        ProcessBuilder pb = new ProcessBuilder(USBIP_PATH, "port");
-        Process proc = pb.start();
-        BufferedReader reader = new BufferedReader(new InputStreamReader(proc.getInputStream()));
-        String line;
-        while ((line = reader.readLine()) != null) {
-            if (line.contains("Port ")) {
-                if (line.contains(busid)) {
-                    return line.trim().split(" ")[1].replace(":", "");
-                }
-            }
-        }
-        proc.waitFor();
-        return null;
-    }
+    // -----------------------------------------------------------------------
+    // Desanexa todos os dispositivos desta máquina (shutdown)
+    // -----------------------------------------------------------------------
     public void detachAllDevices() {
-    try {
-        // 1) Descobre todas as portas em uso nesse CLIENTE
-        ProcessBuilder pb = new ProcessBuilder(USBIP_PATH, "port");
-        pb.redirectErrorStream(true);
-        Process proc = pb.start();
-
-        BufferedReader reader =
-                new BufferedReader(new InputStreamReader(proc.getInputStream()));
-
-        List<String> ports = new ArrayList<>();
-        String line;
-
-        while ((line = reader.readLine()) != null) {
-            line = line.trim();
-            // linhas típicas: "Port 0: <some info>"
-            if (line.startsWith("Port ") && line.contains(":")) {
-                String[] parts = line.split(" ");
-                // parts[1] vem tipo "0:"
-                String portNumber = parts[1].replace(":", "").trim();
-                ports.add(portNumber);
-            }
+        // Usa o mapa interno para detach preciso
+        List<String> busids = new ArrayList<>(busidToPort.keySet());
+        for (String busid : busids) {
+            System.out.println("[UsbService] detachAll: " + busid);
+            detachUsbDevice(busid);
         }
-
-        proc.waitFor();
-
-        // 2) Faz detach em TODAS as portas encontradas
-        for (String port : ports) {
-            System.out.println("[UsbService] Detach da porta " + port);
-            ProcessBuilder detachPb =
-                    new ProcessBuilder(USBIP_PATH, "detach", "--port", port);
-            detachPb.redirectErrorStream(true);
-            Process detachProc = detachPb.start();
-            detachProc.waitFor();
-        }
-
-    } catch (Exception e) {
-        System.out.println("[UsbService] Erro ao executar detachAllDevices()");
-        e.printStackTrace();
+        // Limpa qualquer porta órfã restante
+        detachAllOrphanPorts();
     }
-    }
+
+    // -----------------------------------------------------------------------
+    // Retorna busids mapeados localmente (para o LeftPanel comparar com banco)
+    // -----------------------------------------------------------------------
     public Set<String> listarBusidsAnexados() {
-    Set<String> anexados = new HashSet<>();
+        return new HashSet<>(busidToPort.keySet());
+    }
 
-    try {
-        ProcessBuilder pb = new ProcessBuilder(USBIP_PATH, "port");
-        pb.redirectErrorStream(true);
-        Process proc = pb.start();
-
-        BufferedReader reader = new BufferedReader(new InputStreamReader(proc.getInputStream()));
-        String line;
-        String busidAtual = null;
-
-        while ((line = reader.readLine()) != null) {
-            line = line.trim();
-
-            // Exemplo típico de saída do usbip-win:
-            // Port 0: <some info>
-            //   remote busid 1-1.3 (xxx:yyyy)
-            //
-            if (line.startsWith("remote busid")) {
-                // pega depois de "remote busid "
-                String[] parts = line.split("\\s+");
-                if (parts.length >= 3) {
-                    String busid = parts[2].trim();   // normalmente vem "1-1.3"
-                    // só por segurança tira dois-pontos se tiver
-                    busid = busid.replace(":", "");
-                    anexados.add(busid);
-                }
-            }
+    // -----------------------------------------------------------------------
+    // Re-exporta um dispositivo no Raspberry (unbind/bind)
+    // -----------------------------------------------------------------------
+    public void reexportUsb(String busid) {
+        try {
+            new ProcessBuilder("ssh", "pi@" + RASPBERRY_IP, "sudo usbip unbind -b " + busid)
+                    .start().waitFor();
+            new ProcessBuilder("ssh", "pi@" + RASPBERRY_IP, "sudo usbip bind -b " + busid)
+                    .start().waitFor();
+            System.out.println("[UsbService] USB reexportado: " + busid);
+        } catch (Exception e) {
+            e.printStackTrace();
         }
-
-        proc.waitFor();
-    } catch (Exception e) {
-        System.out.println("[UsbService] Erro ao listar busids anexados");
-        e.printStackTrace();
     }
-
-    return anexados;
-}
-public void reexportUsb(String busid) {
-
-    try {
-
-        ProcessBuilder unbind = new ProcessBuilder(
-                "ssh",
-                "pi@172.20.41.61",
-                "sudo usbip unbind -b " + busid
-        );
-
-        Process p1 = unbind.start();
-        p1.waitFor();
-
-        ProcessBuilder bind = new ProcessBuilder(
-                "ssh",
-                "pi@172.20.41.61",
-                "sudo usbip bind -b " + busid
-        );
-
-        Process p2 = bind.start();
-        p2.waitFor();
-
-        System.out.println("USB reexportado: " + busid);
-
-    } catch (Exception e) {
-        e.printStackTrace();
-    }
-}
 }
