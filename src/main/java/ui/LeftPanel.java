@@ -95,7 +95,7 @@ public class LeftPanel extends JPanel {
         footerPanel.setBackground(new Color(10, 40, 90));
         footerPanel.setBorder(BorderFactory.createEmptyBorder(5, 10, 5, 10));
 
-        JLabel versaoLabel = new JLabel("Versão 2.0");
+        JLabel versaoLabel = new JLabel("Versão 2.1");
         versaoLabel.setForeground(new Color(180, 180, 180));
         versaoLabel.setFont(new Font("Segoe UI", Font.PLAIN, 11));
 
