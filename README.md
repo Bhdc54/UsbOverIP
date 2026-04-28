@@ -84,14 +84,6 @@ usbip.exe attach -r <IP_DO_RASPBERRY> -b <busid>
 
 Após isso, o dispositivo USB aparecerá no Gerenciador de Dispositivos do Windows.
 
-Observações
-
-Rede cabeada é recomendada para estabilidade.
-
-Nem todos os dispositivos USB funcionam perfeitamente.
-
-É possível automatizar a conexão no boot do Windows.
-
 Autor
 
-Brunno Henrique
+Brunno Camargo

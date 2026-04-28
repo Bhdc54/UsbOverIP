@@ -34,6 +34,15 @@ public class UsbService {
     // -----------------------------------------------------------------------
     // Lista dispositivos disponíveis no servidor Raspberry
     // -----------------------------------------------------------------------
+    // VIDs de chips de hub USB que não devem aparecer na lista
+    private static final Set<String> HUB_VIDS = new HashSet<>(java.util.Arrays.asList(
+        "1a86", // QinHeng Electronics (CH340, hub barato)
+        "05e3", // Genesys Logic (hub comum)
+        "0409", // NEC/Renesas (hub)
+        "0bda", // Realtek (hub)
+        "2109"  // VIA Labs (hub)
+    ));
+
     public ArrayList<String> listUsbDevices() {
         ArrayList<String> nomes = new ArrayList<>();
         try {
@@ -48,7 +57,22 @@ public class UsbService {
                     if (parts.length >= 2) {
                         String id   = parts[0].trim();
                         String nome = parts[1].trim() + (parts.length == 3 ? ": " + parts[2].trim() : "");
-                        nomes.add(id + " - " + nome);
+                        String linha = id + " - " + nome;
+
+                        // Filtra chips internos de hub pelo VID (aparece entre parênteses ex: (1a86:80b4))
+                        boolean ehHub = false;
+                        java.util.regex.Matcher m = java.util.regex.Pattern
+                                .compile("\\(([0-9a-fA-F]{4}):[0-9a-fA-F]{4}\\)")
+                                .matcher(linha);
+                        if (m.find() && HUB_VIDS.contains(m.group(1).toLowerCase())) {
+                            ehHub = true;
+                        }
+
+                        if (!ehHub) {
+                            nomes.add(linha);
+                        } else {
+                            System.out.println("[UsbService] Ocultando chip de hub: " + linha);
+                        }
                     }
                 }
             }
