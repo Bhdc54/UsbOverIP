@@ -22,7 +22,7 @@ public class ConfigManager {
     // 🔹 (Opcional) Carrega o último usuário desse IP, se quiser usar depois
     public String loadUserName(String ip) {
         try {
-            Configuracao cfg = configService.buscarPorNome(ip); // pode ajustar depois se quiser buscar por IP
+            Configuracao cfg = configService.buscarPorNome(ip); 
             return (cfg != null) ? cfg.getNome() : null;
         } catch (Exception e) {
             System.err.println("❌ Erro ao carregar usuário do banco: " + e.getMessage());

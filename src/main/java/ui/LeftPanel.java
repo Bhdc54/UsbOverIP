@@ -10,7 +10,6 @@ import websocket.PolitecWebSocketClient;
 
 import javax.swing.*;
 import java.awt.*;
-import java.net.InetAddress;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -30,7 +29,7 @@ public class LeftPanel extends JPanel {
     private final UsoUsbService usoUsbService = new UsoUsbService();
 
     private String usuarioAtual;
-    private String ipLocal = "";
+    private volatile String ipLocal = "";
 
     private PolitecWebSocketClient wsClient;
     private Timer autoRefreshTimer;
@@ -46,9 +45,9 @@ public class LeftPanel extends JPanel {
         usuarioAtual = usuario;
 
         try {
-            ipLocal = InetAddress.getLocalHost().getHostAddress();
+            String ipFallback = getIpLocalFallback();
             ConfigService configService = new ConfigService();
-            Configuracao cfg = configService.buscarPorIp(ipLocal);
+            Configuracao cfg = configService.buscarPorIp(ipFallback);
             if (cfg != null && cfg.getNome() != null && !cfg.getNome().trim().isEmpty()) {
                 usuarioAtual = cfg.getNome();
             }
@@ -60,6 +59,7 @@ public class LeftPanel extends JPanel {
             usuarioAtual = "desconhecido";
         }
 
+        // ----- HEADER -----
         JPanel topPanel = new JPanel(new GridLayout(2, 1));
         topPanel.setBackground(new Color(10, 40, 90));
         topPanel.setBorder(BorderFactory.createEmptyBorder(8, 10, 8, 10));
@@ -68,8 +68,8 @@ public class LeftPanel extends JPanel {
         nomeLabel.setForeground(Color.WHITE);
         nomeLabel.setFont(new Font("Segoe UI", Font.PLAIN, 14));
 
-        ipLabel = new JLabel("IP: " + ipLocal);
-        ipLabel.setForeground(Color.WHITE);
+        ipLabel = new JLabel("IP: aguardando servidor...");
+        ipLabel.setForeground(new Color(255, 200, 50));
         ipLabel.setFont(new Font("Segoe UI", Font.PLAIN, 14));
 
         topPanel.add(nomeLabel);
@@ -78,10 +78,9 @@ public class LeftPanel extends JPanel {
         JPanel headerPanel = new JPanel(new BorderLayout());
         headerPanel.setBackground(new Color(10, 40, 90));
         headerPanel.add(topPanel, BorderLayout.WEST);
-
-        // Botão removido — a lista atualiza automaticamente
         add(headerPanel, BorderLayout.NORTH);
 
+        // ----- CENTRO -----
         devicesPanel = new JPanel();
         devicesPanel.setLayout(new BoxLayout(devicesPanel, BoxLayout.Y_AXIS));
         devicesPanel.setBackground(new Color(10, 40, 90));
@@ -91,11 +90,12 @@ public class LeftPanel extends JPanel {
         scrollPane.setBorder(null);
         add(scrollPane, BorderLayout.CENTER);
 
+        // ----- FOOTER -----
         JPanel footerPanel = new JPanel(new BorderLayout());
         footerPanel.setBackground(new Color(10, 40, 90));
         footerPanel.setBorder(BorderFactory.createEmptyBorder(5, 10, 5, 10));
 
-        JLabel versaoLabel = new JLabel("Versão 2.1");
+        JLabel versaoLabel = new JLabel("Versão 2.3");
         versaoLabel.setForeground(new Color(180, 180, 180));
         versaoLabel.setFont(new Font("Segoe UI", Font.PLAIN, 11));
 
@@ -107,28 +107,29 @@ public class LeftPanel extends JPanel {
         footerPanel.add(devLabel, BorderLayout.EAST);
         add(footerPanel, BorderLayout.SOUTH);
 
-        // Limpa portas corrompidas (?-?) E registros órfãos no banco.
-        // Cenário: app fechou sem detach (crash/Alt+F4) — USB voltou ao Raspberry
-        // mas banco ainda marca como em_uso=TRUE. Outros usuários viam como ocupado.
+        // Limpa portas corrompidas na inicialização
         new Thread(() -> {
             System.out.println("[LeftPanel] Verificando portas orfas...");
             List<String> portasOrfas = usbService.listarPortasOrfas();
 
             if (!portasOrfas.isEmpty()) {
-                System.out.println("[LeftPanel] " + portasOrfas.size() + " porta(s) orfa(s) — limpando USB e banco...");
-
-                // 1) Libera as portas presas localmente
+                System.out.println("[LeftPanel] " + portasOrfas.size() + " porta(s) orfa(s) — limpando...");
                 usbService.detachAllOrphanPorts();
 
-                // 2) Limpa registros desta máquina no banco que estejam como em_uso=TRUE
-                //    (o USB já voltou ao Raspberry, então o registro é inválido)
-                List<UsoUsb> meusUsos = usoUsbService.listarUsosAtivosPorIp(ipLocal);
-                for (UsoUsb uso : meusUsos) {
-                    System.out.println("[LeftPanel] Limpando registro fantasma no banco: busid=" + uso.getBusid());
-                    usoUsbService.encerrarUso(uso.getBusid());
+                int tentativas = 0;
+                while (ipLocal.isEmpty() && tentativas++ < 100) {
+                    try { Thread.sleep(100); } catch (InterruptedException ignored) {}
+                }
+
+                if (!ipLocal.isEmpty()) {
+                    List<UsoUsb> meusUsos = usoUsbService.listarUsosAtivosPorIp(ipLocal);
+                    for (UsoUsb uso : meusUsos) {
+                        System.out.println("[LeftPanel] Limpando registro fantasma: busid=" + uso.getBusid());
+                        usoUsbService.encerrarUso(uso.getBusid());
+                    }
                 }
             } else {
-                System.out.println("[LeftPanel] Nenhuma porta orfa. Tudo limpo.");
+                System.out.println("[LeftPanel] Nenhuma porta orfa.");
             }
 
             SwingUtilities.invokeLater(LeftPanel.this::atualizarListaDispositivos);
@@ -138,14 +139,34 @@ public class LeftPanel extends JPanel {
         iniciarAutoRefresh();
     }
 
+    // -----------------------------------------------------------------------
+    // WebSocket com reconexão automática via PolitecWebSocketClient
+    // -----------------------------------------------------------------------
     private void iniciarWebSocket() {
         String wsUrl = "ws://172.20.41.61:8080";
         try {
             wsClient = new PolitecWebSocketClient(wsUrl);
+
+            wsClient.setOnIpReceived(ip -> SwingUtilities.invokeLater(() -> {
+                ipLocal = ip;
+                ipLabel.setForeground(Color.WHITE);
+                ipLabel.setText("IP: " + ip);
+                System.out.println("[LeftPanel] IP recebido via WebSocket: " + ip);
+
+                try {
+                    new ConfigService().salvarOuAtualizarConfiguracao(usuarioAtual, ip);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+
+                atualizarListaDispositivos();
+            }));
+
             wsClient.setOnMessage(msg -> {
-                System.out.println("[WS-LeftPanel] Mensagem recebida: " + msg);
+                System.out.println("[WS-LeftPanel] STATE recebido — atualizando lista");
                 SwingUtilities.invokeLater(this::atualizarListaDispositivos);
             });
+
             wsClient.connect();
         } catch (Exception e) {
             System.out.println("[WS-LeftPanel] Nao foi possivel conectar ao WebSocket");
@@ -154,15 +175,18 @@ public class LeftPanel extends JPanel {
     }
 
     private void iniciarAutoRefresh() {
+        // Timer de segurança — caso o WebSocket perca alguma mensagem
         autoRefreshTimer = new Timer(10_000, e -> atualizarListaDispositivos());
         autoRefreshTimer.setRepeats(true);
         autoRefreshTimer.start();
     }
 
+    // -----------------------------------------------------------------------
+    // Atualização da lista de dispositivos
+    // -----------------------------------------------------------------------
     private void atualizarListaDispositivos() {
         if (atualizando) return;
         atualizando = true;
-
 
         SwingWorker<Void, Void> worker = new SwingWorker<Void, Void>() {
 
@@ -186,35 +210,20 @@ public class LeftPanel extends JPanel {
                     busidsAnexadosLocalmente = usbService.listarBusidsAnexados();
                 } catch (Exception e) { e.printStackTrace(); }
 
-                // -------------------------------------------------------
-                // LIMPEZA DE FANTASMAS — SOMENTE para registros desta máquina.
-                //
-                // REGRA: um registro é fantasma se, E SOMENTE SE:
-                //   1. O IP do registro é desta máquina
-                //   2. O mapa local (busidToPort) NÃO tem esse busid
-                //      (ou seja, não foi anexado nesta sessão)
-                //   3. O dispositivo voltou para a lista do servidor (disponível)
-                //
-                // Usamos usbService.listarBusidsAnexados() que agora retorna
-                // exatamente o mapa interno — sem depender do "usbip port" que
-                // sempre mostra "?-?" no usbip-win.
-                //
-                // USBs de outras máquinas NUNCA são tocados.
-                // -------------------------------------------------------
-                for (UsoUsb uso : new ArrayList<>(usosAtivos)) {
-                    String busid = uso.getBusid();
+                if (!ipLocal.isEmpty()) {
+                    for (UsoUsb uso : new ArrayList<>(usosAtivos)) {
+                        String busid = uso.getBusid();
+                        if (!ipLocal.equals(uso.getIpMaquina())) continue;
+                        if (busidsAnexadosLocalmente.contains(busid)) continue;
 
-                    if (!ipLocal.equals(uso.getIpMaquina())) continue; // outro cliente, nunca mexe
+                        boolean voltouParaServidor = dispositivosFisicos.stream()
+                                .anyMatch(d -> d.startsWith(busid + " ") || d.startsWith(busid + "-"));
 
-                    if (busidsAnexadosLocalmente.contains(busid)) continue; // ainda está anexado aqui
-
-                    boolean voltouParaServidor = dispositivosFisicos.stream()
-                            .anyMatch(d -> d.startsWith(busid + " ") || d.startsWith(busid + "-"));
-
-                    if (voltouParaServidor) {
-                        System.out.println("[REFRESH] Fantasma desta maquina, limpando banco: busid=" + busid);
-                        usoUsbService.encerrarUso(busid);
-                        usoMap.remove(busid);
+                        if (voltouParaServidor) {
+                            System.out.println("[REFRESH] Fantasma desta maquina, limpando banco: busid=" + busid);
+                            usoUsbService.encerrarUso(busid);
+                            usoMap.remove(busid);
+                        }
                     }
                 }
 
@@ -224,17 +233,13 @@ public class LeftPanel extends JPanel {
             @Override
             protected void done() {
                 try { redesenharCards(); }
-                finally {
-                    atualizando = false;
-
-                }
+                finally { atualizando = false; }
             }
 
             private void redesenharCards() {
                 devicesPanel.removeAll();
                 Set<String> busidsComCard = new HashSet<>();
 
-                // Cards para dispositivos disponíveis no servidor
                 for (String disp : dispositivosFisicos) {
                     String busid = disp.split(" - ")[0].trim();
                     busidsComCard.add(busid);
@@ -242,11 +247,13 @@ public class LeftPanel extends JPanel {
                     devicesPanel.add(Box.createRigidArea(new Dimension(0, 8)));
                 }
 
-                // Dispositivos em uso em outras máquinas (não aparecem na lista física)
                 for (UsoUsb uso : usosAtivos) {
                     String busid = uso.getBusid();
                     if (busidsComCard.contains(busid)) continue;
-                    if (!usoMap.containsKey(busid)) continue; // fantasma já limpo
+
+                    boolean estaMinhaFantasma = ipLocal.equals(uso.getIpMaquina())
+                            && !busidsAnexadosLocalmente.contains(busid);
+                    if (estaMinhaFantasma) continue;
 
                     String dispFake = busid + " - EM USO por " + uso.getUsuario();
                     devicesPanel.add(criarCardDispositivo(dispFake, uso));
@@ -273,6 +280,9 @@ public class LeftPanel extends JPanel {
         worker.execute();
     }
 
+    // -----------------------------------------------------------------------
+    // Card de dispositivo
+    // -----------------------------------------------------------------------
     private JPanel criarCardDispositivo(String disp, UsoUsb usoAtual) {
         JPanel panel = new JPanel(new BorderLayout());
         panel.setBackground(new Color(20, 60, 120));
@@ -318,8 +328,10 @@ public class LeftPanel extends JPanel {
         } else {
             botao.setBackground(new Color(76, 175, 80));
             botao.setText("Atribuir");
-            botao.setEnabled(true);
-            botao.setToolTipText("Clique para atribuir este dispositivo a voce.");
+            botao.setEnabled(!ipLocal.isEmpty());
+            botao.setToolTipText(ipLocal.isEmpty()
+                    ? "Aguardando IP do servidor..."
+                    : "Clique para atribuir este dispositivo a voce.");
         }
 
         JPanel btnWrapper = new JPanel(new GridBagLayout());
@@ -331,8 +343,19 @@ public class LeftPanel extends JPanel {
         return panel;
     }
 
+    // -----------------------------------------------------------------------
+    // Ação de attach/detach
+    // -----------------------------------------------------------------------
     private void tratarCliqueBotao(String busid, String usuarioBotao,
                                    JButton botao, JPanel panel) {
+
+        if (ipLocal.isEmpty()) {
+            JOptionPane.showMessageDialog(panel,
+                    "Aguarde a conexão com o servidor para obter seu IP.",
+                    "Aguardando IP", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+
         botao.setEnabled(false);
 
         SwingWorker<Void, Void> worker = new SwingWorker<Void, Void>() {
@@ -382,8 +405,37 @@ public class LeftPanel extends JPanel {
         worker.execute();
     }
 
+    private String getIpLocalFallback() {
+        try {
+            java.util.Enumeration<java.net.NetworkInterface> interfaces =
+                    java.net.NetworkInterface.getNetworkInterfaces();
+            String fallback = null;
+            while (interfaces.hasMoreElements()) {
+                java.net.NetworkInterface ni = interfaces.nextElement();
+                if (ni.isLoopback() || !ni.isUp() || ni.isVirtual()) continue;
+                String nome = ni.getName() != null ? ni.getName().toLowerCase() : "";
+                if (nome.contains("vpn") || nome.contains("tun") || nome.contains("tap")
+                        || nome.contains("docker") || nome.contains("veth")
+                        || nome.contains("vmware") || nome.contains("virtualbox")) continue;
+                java.util.Enumeration<java.net.InetAddress> addrs = ni.getInetAddresses();
+                while (addrs.hasMoreElements()) {
+                    java.net.InetAddress addr = addrs.nextElement();
+                    if (!(addr instanceof java.net.Inet4Address)) continue;
+                    if (addr.isLoopbackAddress()) continue;
+                    String ip = addr.getHostAddress();
+                    if (ip.startsWith("172.") || ip.startsWith("192.168.") || ip.startsWith("10.")) return ip;
+                    if (fallback == null) fallback = ip;
+                }
+            }
+            if (fallback != null) return fallback;
+        } catch (Exception e) { e.printStackTrace(); }
+        try { return java.net.InetAddress.getLocalHost().getHostAddress(); }
+        catch (Exception e) { return "127.0.0.1"; }
+    }
+
+    // --- IMPORTANTE: usa fechar() para sinalizar ao WebSocket que é encerramento intencional
     public void encerrar() {
         try { if (autoRefreshTimer != null) autoRefreshTimer.stop(); } catch (Exception e) { e.printStackTrace(); }
-        try { if (wsClient != null && wsClient.isOpen()) wsClient.close(); } catch (Exception e) { e.printStackTrace(); }
+        try { if (wsClient != null) wsClient.fechar(); } catch (Exception e) { e.printStackTrace(); }
     }
 }

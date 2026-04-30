@@ -5,6 +5,7 @@ ui\RightPanel.class
 ui\MainFrame$1.class
 service\Configuracao.class
 service\UsoUsb.class
+util\IpUtil.class
 Main.class
 service\DatabaseConnection.class
 ui\MainFrame.class

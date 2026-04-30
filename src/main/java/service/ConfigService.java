@@ -6,34 +6,37 @@ import java.util.List;
 
 public class ConfigService {
 
-    // 🔹 Salva ou atualiza uma configuração (verifica se o nome já existe)
+    // Salva ou atualiza configuração buscando pelo IP (não pelo nome).
+    // Lógica correta:
+    //   - Se já existe um registro para esse IP → atualiza o nome
+    //   - Se não existe → cria novo registro
+    // Assim cada máquina tem exatamente um registro, identificado pelo IP.
     public void salvarOuAtualizarConfiguracao(String nome, String ip) {
-        String checkSql = "SELECT id FROM configuracoes WHERE nome = ?";
-        String updateSql = "UPDATE configuracoes SET ip = ? WHERE nome = ?";
+        String checkSql  = "SELECT id FROM configuracoes WHERE ip = ?";
+        String updateSql = "UPDATE configuracoes SET nome = ? WHERE ip = ?";
         String insertSql = "INSERT INTO configuracoes (nome, ip) VALUES (?, ?)";
 
         try (Connection conn = DatabaseConnection.getConnection();
              PreparedStatement checkStmt = conn.prepareStatement(checkSql)) {
 
-            // Verifica se já existe um registro com o mesmo nome
-            checkStmt.setString(1, nome);
+            checkStmt.setString(1, ip);
             ResultSet rs = checkStmt.executeQuery();
 
             if (rs.next()) {
-                // ✅ Já existe -> atualiza o IP
+                // IP já existe → atualiza apenas o nome
                 try (PreparedStatement updateStmt = conn.prepareStatement(updateSql)) {
-                    updateStmt.setString(1, ip);
-                    updateStmt.setString(2, nome);
+                    updateStmt.setString(1, nome);
+                    updateStmt.setString(2, ip);
                     updateStmt.executeUpdate();
-                    System.out.println("🔁 Configuração existente atualizada: " + nome + " (" + ip + ")");
+                    System.out.println("🔁 Nome atualizado para IP " + ip + ": " + nome);
                 }
             } else {
-                // 🆕 Não existe -> cria novo registro
+                // IP novo → cria registro
                 try (PreparedStatement insertStmt = conn.prepareStatement(insertSql)) {
                     insertStmt.setString(1, nome);
                     insertStmt.setString(2, ip);
                     insertStmt.executeUpdate();
-                    System.out.println("✅ Nova configuração salva: " + nome + " (" + ip + ")");
+                    System.out.println("✅ Nova configuração: " + nome + " (" + ip + ")");
                 }
             }
 
@@ -42,7 +45,7 @@ public class ConfigService {
         }
     }
 
-    // 🔹 Lista todas as configurações
+    // Lista todas as configurações
     public List<Configuracao> listarConfiguracoes() {
         List<Configuracao> lista = new ArrayList<>();
         String sql = "SELECT * FROM configuracoes ORDER BY id DESC";
@@ -52,71 +55,49 @@ public class ConfigService {
              ResultSet rs = stmt.executeQuery(sql)) {
 
             while (rs.next()) {
-                Configuracao cfg = new Configuracao(
+                lista.add(new Configuracao(
                         rs.getInt("id"),
                         rs.getString("nome"),
                         rs.getString("ip")
-                );
-                lista.add(cfg);
+                ));
             }
-
         } catch (SQLException e) {
             e.printStackTrace();
         }
-
         return lista;
     }
 
-    // 🔹 Busca configuração pelo nome
+    // Busca pelo nome
     public Configuracao buscarPorNome(String nome) {
-        Configuracao cfg = null;
         String sql = "SELECT * FROM configuracoes WHERE nome = ?";
-
         try (Connection conn = DatabaseConnection.getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
 
             stmt.setString(1, nome);
             ResultSet rs = stmt.executeQuery();
-
             if (rs.next()) {
-                cfg = new Configuracao(
-                        rs.getInt("id"),
-                        rs.getString("nome"),
-                        rs.getString("ip")
-                );
+                return new Configuracao(rs.getInt("id"), rs.getString("nome"), rs.getString("ip"));
             }
-
         } catch (SQLException e) {
             e.printStackTrace();
         }
-
-        return cfg;
+        return null;
     }
-   // 🔹 Busca configuração pelo IP (pega o último cadastro para aquele IP)
-    public Configuracao buscarPorIp(String ip) {
-        Configuracao cfg = null;
-        String sql = "SELECT * FROM configuracoes WHERE ip = ? ORDER BY id DESC LIMIT 1";
 
+    // Busca pelo IP — retorna o registro desta máquina
+    public Configuracao buscarPorIp(String ip) {
+        String sql = "SELECT * FROM configuracoes WHERE ip = ? ORDER BY id DESC LIMIT 1";
         try (Connection conn = DatabaseConnection.getConnection();
-            PreparedStatement stmt = conn.prepareStatement(sql)) {
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
 
             stmt.setString(1, ip);
             ResultSet rs = stmt.executeQuery();
-
             if (rs.next()) {
-                cfg = new Configuracao(
-                        rs.getInt("id"),
-                        rs.getString("nome"),
-                        rs.getString("ip")
-                );
+                return new Configuracao(rs.getInt("id"), rs.getString("nome"), rs.getString("ip"));
             }
-
         } catch (SQLException e) {
             e.printStackTrace();
         }
-
-        return cfg;
+        return null;
     }
 }
-
- 

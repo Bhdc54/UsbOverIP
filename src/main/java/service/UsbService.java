@@ -3,7 +3,6 @@ package service;
 import listener.UsbListener;
 
 import java.io.BufferedReader;
-import java.io.IOException;
 import java.io.InputStreamReader;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -20,12 +19,6 @@ public class UsbService {
     private static final String RASPBERRY_IP = "172.20.41.61";
     private static final int    TIMEOUT_SEC  = 30;
 
-    // -----------------------------------------------------------------------
-    // Mapa em memória: busid -> número da porta local.
-    // Preenchido no attach (lemos "attached to port N" da saída).
-    // Usado no detach para saber qual --port passar.
-    // Sobrevive enquanto o processo Java estiver rodando.
-    // -----------------------------------------------------------------------
     private static final Map<String, String> busidToPort = new HashMap<>();
 
     private UsbListener listener;
@@ -33,16 +26,8 @@ public class UsbService {
 
     // -----------------------------------------------------------------------
     // Lista dispositivos disponíveis no servidor Raspberry
+    // Sem filtro de hub — todos os dispositivos exportados aparecem.
     // -----------------------------------------------------------------------
-    // VIDs de chips de hub USB que não devem aparecer na lista
-    private static final Set<String> HUB_VIDS = new HashSet<>(java.util.Arrays.asList(
-        "1a86", // QinHeng Electronics (CH340, hub barato)
-        "05e3", // Genesys Logic (hub comum)
-        "0409", // NEC/Renesas (hub)
-        "0bda", // Realtek (hub)
-        "2109"  // VIA Labs (hub)
-    ));
-
     public ArrayList<String> listUsbDevices() {
         ArrayList<String> nomes = new ArrayList<>();
         try {
@@ -57,22 +42,7 @@ public class UsbService {
                     if (parts.length >= 2) {
                         String id   = parts[0].trim();
                         String nome = parts[1].trim() + (parts.length == 3 ? ": " + parts[2].trim() : "");
-                        String linha = id + " - " + nome;
-
-                        // Filtra chips internos de hub pelo VID (aparece entre parênteses ex: (1a86:80b4))
-                        boolean ehHub = false;
-                        java.util.regex.Matcher m = java.util.regex.Pattern
-                                .compile("\\(([0-9a-fA-F]{4}):[0-9a-fA-F]{4}\\)")
-                                .matcher(linha);
-                        if (m.find() && HUB_VIDS.contains(m.group(1).toLowerCase())) {
-                            ehHub = true;
-                        }
-
-                        if (!ehHub) {
-                            nomes.add(linha);
-                        } else {
-                            System.out.println("[UsbService] Ocultando chip de hub: " + linha);
-                        }
+                        nomes.add(id + " - " + nome);
                     }
                 }
             }
@@ -115,10 +85,8 @@ public class UsbService {
             leitor.join(2000);
 
             if (p.exitValue() == 0) {
-                // Coleta todas as portas abertas agora (para o fallback de diff)
                 Set<String> portasAbertas = listarTodasPortasAbertas();
 
-                // Extrai número da porta da saída: "attached to port 0" ou "attached to port 00"
                 String saida = output.toString();
                 Pattern pat = Pattern.compile("attached to port\\s+(\\d+)", Pattern.CASE_INSENSITIVE);
                 Matcher mat = pat.matcher(saida);
@@ -127,10 +95,6 @@ public class UsbService {
                     busidToPort.put(busid, porta);
                     System.out.println("[UsbService] busid=" + busid + " -> porta=" + porta);
                 } else {
-                    // Fallback: compara portas abertas ANTES e DEPOIS do attach
-                    // para identificar qual porta nova foi criada para este busid.
-                    // Isso é seguro mesmo com 10 USBs simultâneos porque cada attach
-                    // abre exatamente UMA porta nova.
                     String portaNova = portasAbertas.isEmpty() ? null
                             : portasAbertas.stream()
                                     .filter(porta -> !busidToPort.containsValue(porta))
@@ -161,7 +125,6 @@ public class UsbService {
 
         if (porta == null) {
             System.out.println("[UsbService] busid=" + busid + " nao esta no mapa local. Tentando por porta orfa.");
-            // Tenta limpar portas orfas (estado ?-?) se houver apenas uma
             List<String> orfas = listarPortasOrfas();
             if (orfas.size() == 1) {
                 porta = orfas.get(0);
@@ -242,8 +205,7 @@ public class UsbService {
     }
 
     // -----------------------------------------------------------------------
-    // Lista TODAS as portas abertas atualmente (números como "00", "01", ...)
-    // Usado no fallback do attach para descobrir qual porta foi alocada.
+    // Lista TODAS as portas abertas atualmente
     // -----------------------------------------------------------------------
     private Set<String> listarTodasPortasAbertas() {
         Set<String> portas = new HashSet<>();
@@ -302,18 +264,16 @@ public class UsbService {
     // Desanexa todos os dispositivos desta máquina (shutdown)
     // -----------------------------------------------------------------------
     public void detachAllDevices() {
-        // Usa o mapa interno para detach preciso
         List<String> busids = new ArrayList<>(busidToPort.keySet());
         for (String busid : busids) {
             System.out.println("[UsbService] detachAll: " + busid);
             detachUsbDevice(busid);
         }
-        // Limpa qualquer porta órfã restante
         detachAllOrphanPorts();
     }
 
     // -----------------------------------------------------------------------
-    // Retorna busids mapeados localmente (para o LeftPanel comparar com banco)
+    // Retorna busids mapeados localmente
     // -----------------------------------------------------------------------
     public Set<String> listarBusidsAnexados() {
         return new HashSet<>(busidToPort.keySet());
