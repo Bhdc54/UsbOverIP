@@ -3,21 +3,18 @@ package ui;
 import service.UsbService;
 import service.ConfigService;
 import service.Configuracao;
-import service.UsoUsbService;
-import service.UsoUsb;
+import config.AppConfig;
 
 import websocket.PolitecWebSocketClient;
 
 import javax.swing.*;
 import java.awt.*;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.HashMap;
-import java.util.Set;
-import java.util.HashSet;
+import java.time.Instant;
+import java.time.ZoneId;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.*;
+import java.util.List;
 
 public class LeftPanel extends JPanel {
 
@@ -26,15 +23,14 @@ public class LeftPanel extends JPanel {
     private JPanel devicesPanel;
 
     private final UsbService usbService = new UsbService();
-    private final UsoUsbService usoUsbService = new UsoUsbService();
 
     private String usuarioAtual;
     private volatile String ipLocal = "";
 
     private PolitecWebSocketClient wsClient;
-    private Timer autoRefreshTimer;
+    private javax.swing.Timer autoRefreshTimer;
 
-    private volatile boolean atualizando = false;
+    private final List<DeviceInfo> estadoAtual = new ArrayList<>();
 
     public LeftPanel() { this(null); }
 
@@ -88,6 +84,7 @@ public class LeftPanel extends JPanel {
 
         JScrollPane scrollPane = new JScrollPane(devicesPanel);
         scrollPane.setBorder(null);
+        scrollPane.getVerticalScrollBar().setUnitIncrement(16);
         add(scrollPane, BorderLayout.CENTER);
 
         // ----- FOOTER -----
@@ -95,7 +92,7 @@ public class LeftPanel extends JPanel {
         footerPanel.setBackground(new Color(10, 40, 90));
         footerPanel.setBorder(BorderFactory.createEmptyBorder(5, 10, 5, 10));
 
-        JLabel versaoLabel = new JLabel("Versão 2.3");
+        JLabel versaoLabel = new JLabel("Versão " + AppConfig.VERSION);
         versaoLabel.setForeground(new Color(180, 180, 180));
         versaoLabel.setFont(new Font("Segoe UI", Font.PLAIN, 11));
 
@@ -107,40 +104,23 @@ public class LeftPanel extends JPanel {
         footerPanel.add(devLabel, BorderLayout.EAST);
         add(footerPanel, BorderLayout.SOUTH);
 
-        // Limpa portas corrompidas na inicialização
+        // Limpa portas órfãs na inicialização
         new Thread(() -> {
-            System.out.println("[LeftPanel] Verificando portas orfas...");
             List<String> portasOrfas = usbService.listarPortasOrfas();
-
             if (!portasOrfas.isEmpty()) {
-                System.out.println("[LeftPanel] " + portasOrfas.size() + " porta(s) orfa(s) — limpando...");
                 usbService.detachAllOrphanPorts();
-
-                int tentativas = 0;
-                while (ipLocal.isEmpty() && tentativas++ < 100) {
-                    try { Thread.sleep(100); } catch (InterruptedException ignored) {}
-                }
-
-                if (!ipLocal.isEmpty()) {
-                    List<UsoUsb> meusUsos = usoUsbService.listarUsosAtivosPorIp(ipLocal);
-                    for (UsoUsb uso : meusUsos) {
-                        System.out.println("[LeftPanel] Limpando registro fantasma: busid=" + uso.getBusid());
-                        usoUsbService.encerrarUso(uso.getBusid());
-                    }
-                }
-            } else {
-                System.out.println("[LeftPanel] Nenhuma porta orfa.");
             }
-
-            SwingUtilities.invokeLater(LeftPanel.this::atualizarListaDispositivos);
         }).start();
 
         iniciarWebSocket();
-        iniciarAutoRefresh();
+
+        autoRefreshTimer = new javax.swing.Timer(15_000, e -> redesenharCards());
+        autoRefreshTimer.setRepeats(true);
+        autoRefreshTimer.start();
     }
 
     // -----------------------------------------------------------------------
-    // WebSocket com reconexão automática via PolitecWebSocketClient
+    // WebSocket
     // -----------------------------------------------------------------------
     private void iniciarWebSocket() {
         String wsUrl = "ws://172.20.41.61:8080";
@@ -151,157 +131,127 @@ public class LeftPanel extends JPanel {
                 ipLocal = ip;
                 ipLabel.setForeground(Color.WHITE);
                 ipLabel.setText("IP: " + ip);
-                System.out.println("[LeftPanel] IP recebido via WebSocket: " + ip);
-
                 try {
                     new ConfigService().salvarOuAtualizarConfiguracao(usuarioAtual, ip);
                 } catch (Exception e) {
                     e.printStackTrace();
                 }
-
-                atualizarListaDispositivos();
             }));
 
             wsClient.setOnMessage(msg -> {
-                System.out.println("[WS-LeftPanel] STATE recebido — atualizando lista");
-                SwingUtilities.invokeLater(this::atualizarListaDispositivos);
+                List<DeviceInfo> novosDevices = parsearState(msg);
+                SwingUtilities.invokeLater(() -> {
+                    estadoAtual.clear();
+                    estadoAtual.addAll(novosDevices);
+                    redesenharCards();
+                });
             });
 
             wsClient.connect();
         } catch (Exception e) {
-            System.out.println("[WS-LeftPanel] Nao foi possivel conectar ao WebSocket");
             e.printStackTrace();
         }
     }
 
-    private void iniciarAutoRefresh() {
-        // Timer de segurança — caso o WebSocket perca alguma mensagem
-        autoRefreshTimer = new Timer(10_000, e -> atualizarListaDispositivos());
-        autoRefreshTimer.setRepeats(true);
-        autoRefreshTimer.start();
+    // -----------------------------------------------------------------------
+    // Parseia o JSON STATE do servidor
+    // -----------------------------------------------------------------------
+    private List<DeviceInfo> parsearState(String json) {
+        List<DeviceInfo> lista = new ArrayList<>();
+        try {
+            int inicio = json.indexOf("[");
+            int fim = json.lastIndexOf("]");
+            if (inicio < 0 || fim < 0) return lista;
+
+            String array = json.substring(inicio + 1, fim);
+            int depth = 0;
+            int start = -1;
+            for (int i = 0; i < array.length(); i++) {
+                char c = array.charAt(i);
+                if (c == '{') {
+                    if (depth == 0) start = i;
+                    depth++;
+                } else if (c == '}') {
+                    depth--;
+                    if (depth == 0 && start >= 0) {
+                        String obj = array.substring(start, i + 1);
+                        DeviceInfo d = new DeviceInfo();
+                        d.busid  = pickJson(obj, "busid");
+                        d.name   = pickJson(obj, "name");
+                        d.status = pickJson(obj, "status");
+                        d.user   = pickJson(obj, "user");
+                        d.ip     = pickJson(obj, "ip");
+                        d.since  = pickJson(obj, "since");
+                        if (!d.busid.isEmpty()) lista.add(d);
+                        start = -1;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return lista;
+    }
+
+    private static String pickJson(String json, String key) {
+        String pattern = "\"" + key + "\":\"";
+        int i = json.indexOf(pattern);
+        if (i < 0) return "";
+        int start = i + pattern.length();
+        int end = json.indexOf("\"", start);
+        if (end < 0) return "";
+        return json.substring(start, end);
     }
 
     // -----------------------------------------------------------------------
-    // Atualização da lista de dispositivos
+    // Redesenha os cards
     // -----------------------------------------------------------------------
-    private void atualizarListaDispositivos() {
-        if (atualizando) return;
-        atualizando = true;
+    private void redesenharCards() {
+        devicesPanel.removeAll();
 
-        SwingWorker<Void, Void> worker = new SwingWorker<Void, Void>() {
-
-            ArrayList<String> dispositivosFisicos = new ArrayList<>();
-            List<UsoUsb> usosAtivos = new ArrayList<>();
-            Set<String> busidsAnexadosLocalmente = new HashSet<>();
-            Map<String, UsoUsb> usoMap = new HashMap<>();
-
-            @Override
-            protected Void doInBackground() {
-                try {
-                    dispositivosFisicos = usbService.listUsbDevices();
-                } catch (Exception e) { e.printStackTrace(); }
-
-                try {
-                    usosAtivos = usoUsbService.listarUsosAtivos();
-                    for (UsoUsb uso : usosAtivos) usoMap.put(uso.getBusid(), uso);
-                } catch (Exception e) { e.printStackTrace(); }
-
-                try {
-                    busidsAnexadosLocalmente = usbService.listarBusidsAnexados();
-                } catch (Exception e) { e.printStackTrace(); }
-
-                if (!ipLocal.isEmpty()) {
-                    for (UsoUsb uso : new ArrayList<>(usosAtivos)) {
-                        String busid = uso.getBusid();
-                        if (!ipLocal.equals(uso.getIpMaquina())) continue;
-                        if (busidsAnexadosLocalmente.contains(busid)) continue;
-
-                        boolean voltouParaServidor = dispositivosFisicos.stream()
-                                .anyMatch(d -> d.startsWith(busid + " ") || d.startsWith(busid + "-"));
-
-                        if (voltouParaServidor) {
-                            System.out.println("[REFRESH] Fantasma desta maquina, limpando banco: busid=" + busid);
-                            usoUsbService.encerrarUso(busid);
-                            usoMap.remove(busid);
-                        }
-                    }
-                }
-
-                return null;
+        if (estadoAtual.isEmpty()) {
+            JLabel vazio = new JLabel("Nenhum dispositivo USB disponivel.");
+            vazio.setForeground(Color.WHITE);
+            vazio.setHorizontalAlignment(SwingConstants.CENTER);
+            vazio.setFont(new Font("Segoe UI", Font.PLAIN, 14));
+            JPanel vazioPanel = new JPanel(new BorderLayout());
+            vazioPanel.setBackground(new Color(10, 40, 90));
+            vazioPanel.add(vazio, BorderLayout.CENTER);
+            devicesPanel.add(vazioPanel);
+        } else {
+            for (DeviceInfo d : estadoAtual) {
+                devicesPanel.add(criarCard(d));
+                devicesPanel.add(Box.createRigidArea(new Dimension(0, 8)));
             }
+        }
 
-            @Override
-            protected void done() {
-                try { redesenharCards(); }
-                finally { atualizando = false; }
-            }
-
-            private void redesenharCards() {
-                devicesPanel.removeAll();
-                Set<String> busidsComCard = new HashSet<>();
-
-                for (String disp : dispositivosFisicos) {
-                    String busid = disp.split(" - ")[0].trim();
-                    busidsComCard.add(busid);
-                    devicesPanel.add(criarCardDispositivo(disp, usoMap.get(busid)));
-                    devicesPanel.add(Box.createRigidArea(new Dimension(0, 8)));
-                }
-
-                for (UsoUsb uso : usosAtivos) {
-                    String busid = uso.getBusid();
-                    if (busidsComCard.contains(busid)) continue;
-
-                    boolean estaMinhaFantasma = ipLocal.equals(uso.getIpMaquina())
-                            && !busidsAnexadosLocalmente.contains(busid);
-                    if (estaMinhaFantasma) continue;
-
-                    String dispFake = busid + " - EM USO por " + uso.getUsuario();
-                    devicesPanel.add(criarCardDispositivo(dispFake, uso));
-                    devicesPanel.add(Box.createRigidArea(new Dimension(0, 8)));
-                    busidsComCard.add(busid);
-                }
-
-                if (devicesPanel.getComponentCount() == 0) {
-                    JLabel vazio = new JLabel("Nenhum dispositivo USB disponivel.");
-                    vazio.setForeground(Color.WHITE);
-                    vazio.setHorizontalAlignment(SwingConstants.CENTER);
-                    vazio.setFont(new Font("Segoe UI", Font.PLAIN, 14));
-                    JPanel vazioPanel = new JPanel(new BorderLayout());
-                    vazioPanel.setBackground(new Color(10, 40, 90));
-                    vazioPanel.add(vazio, BorderLayout.CENTER);
-                    devicesPanel.add(vazioPanel);
-                }
-
-                devicesPanel.revalidate();
-                devicesPanel.repaint();
-            }
-        };
-
-        worker.execute();
+        devicesPanel.revalidate();
+        devicesPanel.repaint();
     }
 
     // -----------------------------------------------------------------------
     // Card de dispositivo
     // -----------------------------------------------------------------------
-    private JPanel criarCardDispositivo(String disp, UsoUsb usoAtual) {
+    private JPanel criarCard(DeviceInfo d) {
         JPanel panel = new JPanel(new BorderLayout());
         panel.setBackground(new Color(20, 60, 120));
         panel.setBorder(BorderFactory.createEmptyBorder(8, 12, 8, 12));
         panel.setMaximumSize(new Dimension(Integer.MAX_VALUE, 70));
 
-        String textoParaExibir = disp;
-        if (disp.toLowerCase().contains("aladdin")) {
-            textoParaExibir = disp.split(" - ")[0].trim() + " - Cellebrite Physical Analyser";
+        String nomeExibir = d.busid + " - ";
+        if (d.name.toLowerCase().contains("aladdin")) {
+            nomeExibir += "Cellebrite Physical Analyser";
+        } else {
+            nomeExibir += d.name.isEmpty() ? "USB Device" : d.name;
         }
 
-        JLabel nomeDisp = new JLabel(textoParaExibir);
+        JLabel nomeDisp = new JLabel(nomeExibir);
         nomeDisp.setForeground(Color.WHITE);
         nomeDisp.setFont(new Font("Segoe UI", Font.BOLD, 13));
         panel.add(nomeDisp, BorderLayout.CENTER);
 
-        String busid = disp.split(" - ")[0].trim();
-        final String usuarioBotao = (usuarioAtual != null && !usuarioAtual.trim().isEmpty())
-                ? usuarioAtual : "desconhecido";
+        boolean emUso = "BUSY".equals(d.status);
+        boolean ehDono = emUso && d.ip.equals(ipLocal);
 
         JButton botao = new JButton();
         botao.setFont(new Font("Segoe UI", Font.BOLD, 12));
@@ -309,29 +259,27 @@ public class LeftPanel extends JPanel {
         botao.setPreferredSize(new Dimension(160, 35));
         botao.setForeground(Color.WHITE);
 
-        boolean emUso = (usoAtual != null);
-        boolean ehDono = emUso
-                && usoAtual.getUsuario() != null
-                && usuarioAtual != null
-                && usoAtual.getUsuario().equalsIgnoreCase(usuarioAtual);
-
         if (emUso) {
-            LocalDateTime inicio = usoAtual.getInicioUso().toLocalDateTime();
-            DateTimeFormatter fmt = DateTimeFormatter.ofPattern("dd/MM HH:mm");
+            String dataHora = "";
+            try {
+                Instant instant = Instant.parse(d.since);
+                LocalDateTime ldt = instant.atZone(ZoneId.systemDefault()).toLocalDateTime();
+                dataHora = ldt.format(DateTimeFormatter.ofPattern("dd/MM HH:mm"));
+            } catch (Exception ignored) {}
+
             botao.setBackground(new Color(200, 60, 60));
-            botao.setText("<html><center>" + usoAtual.getUsuario()
-                    + "<br>" + inicio.format(fmt) + "</center></html>");
+            botao.setText("<html><center>" + d.user + "<br>" + dataHora + "</center></html>");
             botao.setEnabled(ehDono);
             botao.setToolTipText(ehDono
                     ? "Clique para liberar o dispositivo."
-                    : "Em uso por " + usoAtual.getUsuario() + ". Apenas esse usuario pode liberar.");
+                    : "Em uso por " + d.user + ". Apenas esse usuário pode liberar.");
         } else {
             botao.setBackground(new Color(76, 175, 80));
             botao.setText("Atribuir");
             botao.setEnabled(!ipLocal.isEmpty());
             botao.setToolTipText(ipLocal.isEmpty()
                     ? "Aguardando IP do servidor..."
-                    : "Clique para atribuir este dispositivo a voce.");
+                    : "Clique para atribuir este dispositivo a você.");
         }
 
         JPanel btnWrapper = new JPanel(new GridBagLayout());
@@ -339,16 +287,14 @@ public class LeftPanel extends JPanel {
         btnWrapper.add(botao);
         panel.add(btnWrapper, BorderLayout.EAST);
 
-        botao.addActionListener(e -> tratarCliqueBotao(busid, usuarioBotao, botao, panel));
+        botao.addActionListener(e -> tratarClique(d.busid, botao, panel));
         return panel;
     }
 
     // -----------------------------------------------------------------------
-    // Ação de attach/detach
+    // Attach / Detach
     // -----------------------------------------------------------------------
-    private void tratarCliqueBotao(String busid, String usuarioBotao,
-                                   JButton botao, JPanel panel) {
-
+    private void tratarClique(String busid, JButton botao, JPanel panel) {
         if (ipLocal.isEmpty()) {
             JOptionPane.showMessageDialog(panel,
                     "Aguarde a conexão com o servidor para obter seu IP.",
@@ -357,54 +303,51 @@ public class LeftPanel extends JPanel {
         }
 
         botao.setEnabled(false);
+        boolean eraAtribuir = botao.getText().contains("Atribuir");
 
-        SwingWorker<Void, Void> worker = new SwingWorker<Void, Void>() {
-            String erro = null;
-            boolean eraAtribuir = botao.getText().contains("Atribuir");
-
+        SwingWorker<String, Void> worker = new SwingWorker<String, Void>() {
             @Override
-            protected Void doInBackground() {
+            protected String doInBackground() {
                 if (eraAtribuir) {
-                    UsoUsb usoExistente = usoUsbService.buscarUsoAtivo(busid);
-                    if (usoExistente != null) {
-                        erro = "Este dispositivo ja foi atribuido por: " + usoExistente.getUsuario();
+                    boolean ok = usbService.attachUsbDevice(busid);
+                    if (ok) {
+                        String msg = "{\"type\":\"ATTACHED\",\"busid\":\"" + busid
+                                + "\",\"user\":\"" + usuarioAtual
+                                + "\",\"ip\":\"" + ipLocal + "\"}";
+                        wsClient.send(msg);
                         return null;
                     }
-                    if (usbService.attachUsbDevice(busid)) {
-                        boolean registrado = usoUsbService.registrarUso(busid, usuarioBotao, ipLocal);
-                        if (!registrado) {
-                            usbService.detachUsbDevice(busid);
-                            UsoUsb vencedor = usoUsbService.buscarUsoAtivo(busid);
-                            erro = "Dispositivo atribuido por outro usuario simultaneamente"
-                                    + (vencedor != null ? ": " + vencedor.getUsuario() : "") + ".";
-                        }
-                    } else {
-                        erro = "Falha ao atribuir o dispositivo.\nVerifique se o usbip esta acessivel.";
-                    }
+                    return "Falha ao atribuir o dispositivo.\nVerifique se o usbip está acessível.";
                 } else {
-                    UsoUsb uso = usoUsbService.buscarUsoAtivo(busid);
-                    if (uso != null && !uso.getUsuario().equalsIgnoreCase(usuarioAtual)) {
-                        erro = "Voce nao pode liberar um dispositivo em uso por: " + uso.getUsuario();
-                        return null;
-                    }
                     usbService.detachUsbDevice(busid);
-                    usoUsbService.encerrarUso(busid);
+                    String msg = "{\"type\":\"DETACHED\",\"busid\":\"" + busid
+                            + "\",\"ip\":\"" + ipLocal + "\"}";
+                    wsClient.send(msg);
+                    return null;
                 }
-                return null;
             }
 
             @Override
             protected void done() {
-                if (erro != null) {
-                    JOptionPane.showMessageDialog(panel, erro, "Aviso", JOptionPane.WARNING_MESSAGE);
+                try {
+                    String erro = get();
+                    if (erro != null) {
+                        JOptionPane.showMessageDialog(panel, erro, "Aviso", JOptionPane.WARNING_MESSAGE);
+                        botao.setEnabled(true);
+                    }
+                } catch (Exception e) {
+                    e.printStackTrace();
+                    botao.setEnabled(true);
                 }
-                atualizarListaDispositivos();
             }
         };
 
         worker.execute();
     }
 
+    // -----------------------------------------------------------------------
+    // IP local fallback
+    // -----------------------------------------------------------------------
     private String getIpLocalFallback() {
         try {
             java.util.Enumeration<java.net.NetworkInterface> interfaces =
@@ -433,9 +376,26 @@ public class LeftPanel extends JPanel {
         catch (Exception e) { return "127.0.0.1"; }
     }
 
-    // --- IMPORTANTE: usa fechar() para sinalizar ao WebSocket que é encerramento intencional
     public void encerrar() {
-        try { if (autoRefreshTimer != null) autoRefreshTimer.stop(); } catch (Exception e) { e.printStackTrace(); }
-        try { if (wsClient != null) wsClient.fechar(); } catch (Exception e) { e.printStackTrace(); }
+        try { if (autoRefreshTimer != null) autoRefreshTimer.stop(); } catch (Exception ignored) {}
+        try {
+            if (wsClient != null) {
+                for (DeviceInfo d : estadoAtual) {
+                    if ("BUSY".equals(d.status) && d.ip.equals(ipLocal)) {
+                        usbService.detachUsbDevice(d.busid);
+                    }
+                }
+                wsClient.fechar();
+            }
+        } catch (Exception ignored) {}
+    }
+
+    static class DeviceInfo {
+        String busid  = "";
+        String name   = "";
+        String status = "FREE";
+        String user   = "";
+        String ip     = "";
+        String since  = "";
     }
 }

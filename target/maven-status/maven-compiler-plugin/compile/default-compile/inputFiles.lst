@@ -1,3 +1,4 @@
+C:\Users\03357343169\Desktop\POLITEC\src\main\java\config\AppConfig.java
 C:\Users\03357343169\Desktop\POLITEC\src\main\java\config\ConfigManager.java
 C:\Users\03357343169\Desktop\POLITEC\src\main\java\listener\UsbListener.java
 C:\Users\03357343169\Desktop\POLITEC\src\main\java\Main.java
@@ -12,5 +13,7 @@ C:\Users\03357343169\Desktop\POLITEC\src\main\java\ui\LogoLoader.java
 C:\Users\03357343169\Desktop\POLITEC\src\main\java\ui\MainFrame.java
 C:\Users\03357343169\Desktop\POLITEC\src\main\java\ui\RightPanel.java
 C:\Users\03357343169\Desktop\POLITEC\src\main\java\ui\TokenPanel.java
+C:\Users\03357343169\Desktop\POLITEC\src\main\java\updater\UpdateDialog.java
+C:\Users\03357343169\Desktop\POLITEC\src\main\java\updater\Updater.java
 C:\Users\03357343169\Desktop\POLITEC\src\main\java\util\IpUtil.java
 C:\Users\03357343169\Desktop\POLITEC\src\main\java\websocket\PolitecWebSocketClient.java

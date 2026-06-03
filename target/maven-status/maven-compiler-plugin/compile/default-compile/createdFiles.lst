@@ -1,9 +1,13 @@
+updater\Updater.class
+ui\LeftPanel$DeviceInfo.class
 ui\LogoLoader.class
 websocket\PolitecWebSocketClient.class
 ui\LeftPanel$1.class
 ui\RightPanel.class
 ui\MainFrame$1.class
+updater\UpdateDialog.class
 service\Configuracao.class
+config\AppConfig.class
 service\UsoUsb.class
 util\IpUtil.class
 Main.class
@@ -16,4 +20,3 @@ config\ConfigManager.class
 service\UsbService.class
 listener\UsbListener.class
 service\UsoUsbService.class
-ui\LeftPanel$2.class

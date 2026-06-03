@@ -3,7 +3,7 @@
 ; Non-commercial use only
 
 #define MyAppName "POLITEC USB"
-#define MyAppVersion "1.0"
+#define MyAppVersion "2.4"
 #define MyAppPublisher "POLITEC"
 #define MyAppURL "https://www.example.com/"
 #define MyAppExeName "POLITECusb.exe"
@@ -31,6 +31,8 @@ DisableProgramGroupPage=yes
 OutputBaseFilename=usb
 SolidCompression=yes
 WizardStyle=modern dynamic
+CloseApplications=yes
+RestartApplications=no
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -41,6 +43,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "C:\Users\03357343169\Desktop\POLITEC\release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "C:\Users\03357343169\Desktop\POLITEC\release\politec-1.0-SNAPSHOT-jar-with-dependencies.jar"; DestDir: "{app}"; Flags: ignoreversion
 Source: "C:\Users\03357343169\Desktop\POLITEC\release\usbip-win-0.3.6-dev\*"; DestDir: "{app}\usbip-win-0.3.6-dev"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; NOTE: Don't use "Flags: ignoreversion" on any shared system files
 
