@@ -1,2 +1,53 @@
 # Ignorar arquivos de configuração
 config.properties
+
+# Maven
+target/
+*.jar
+*.war
+*.ear
+
+# Logs
+*.log
+
+# IntelliJ
+.idea/
+*.iml
+
+# Eclipse
+.project
+.classpath
+.settings/
+
+# VS Code
+.vscode/
+
+# NetBeans
+nbproject/private/
+
+# Arquivos compilados Java
+*.class
+
+# Arquivos temporários
+*.tmp
+*.temp
+
+# Sistema Operacional
+.DS_Store
+Thumbs.db
+
+# Configurações locais
+config.properties
+application-local.properties
+
+# Arquivos de atualização
+release/
+
+# Arquivos de banco local
+*.db
+*.sqlite
+*.sqlite3
+
+# Arquivos com senhas/configurações locais
+src/main/java/service/DatabaseConnection.java
+src/main/java/service/UsbService.java
